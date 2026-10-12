@@ -1,0 +1,10 @@
+{
+  "description": "Streamline medical coding with a user-friendly dashboard for coders, featuring case reviews, confidence scoring, and audit trails to enhance accuracy and efficiency.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
