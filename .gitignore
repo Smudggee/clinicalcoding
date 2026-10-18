@@ -3,3 +3,10 @@
 venv/
 __pycache__/
 *.pyc
+# Ignore local audio recordings
+/clinical-coding-project/data/audio/
+
+# Ignore generated evaluation outputs
+/clinical-coding-project/evaluation/prepared_test_output/
+/clinical-coding-project/evaluation/test_output/
+/clinical-coding-project/evaluation/synthetic_records.json

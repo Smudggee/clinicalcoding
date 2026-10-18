@@ -55,13 +55,13 @@ class SlidingWindowChunker:
             end = min(start + self.window_size, n)
             token_slice = input_ids[start:end]
             window_text = self.tokenizer.decode(token_slice, skip_special_tokens=True)
-            char_start = offsets[start][0] if start < len(offsets) else 0
-            char_end = offsets[end - 1][1] if end - 1 < len(offsets) else len(text)
+            start_token_offset = start
+            end_token_offset = end
             windows.append(Window(
                 window_id=window_id,
                 text=window_text,
-                start_token_offset=char_start,
-                end_token_offset=char_end,
+                start_token_offset=start_token_offset,
+                end_token_offset=end_token_offset,
             ))
             window_id += 1
             if end == n:
