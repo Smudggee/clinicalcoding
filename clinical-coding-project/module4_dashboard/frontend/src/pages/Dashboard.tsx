@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import type { AuthState, CaseItem, AuditEntry } from "../types";
-import { apiGetCases, apiGetAudit } from "../api";
+import { apiGetCases, apiGetAudit, apiAnalyzeNote } from "../api";
 import { CaseStatusBadge } from "../components/StatusBadge";
 import { TableRowSkeleton } from "../components/Skeleton";
 import Header from "../components/Header";
@@ -22,6 +22,10 @@ export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
   const [cases, setCases] = useState<CaseItem[]>([]);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [noteText, setNoteText] = useState("");
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [sortField, setSortField] = useState<SortField>("submittedAt");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [page, setPage] = useState(0);
@@ -32,12 +36,30 @@ export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
       const [c, a] = await Promise.all([apiGetCases(), apiGetAudit()]);
       setCases(c);
       setAudit(a.slice(0, 5));
+      setLoadError(null);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Could not load dashboard data.");
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  async function analyzeNote() {
+    if (!noteText.trim()) return;
+    setAnalyzing(true);
+    setAnalysisError(null);
+    try {
+      const analyzed = await apiAnalyzeNote(noteText.trim());
+      setNoteText("");
+      onNavigate("case-review", analyzed.id);
+    } catch (e) {
+      setAnalysisError(e instanceof Error ? e.message : "Clinical note analysis failed.");
+    } finally {
+      setAnalyzing(false);
+    }
+  }
 
   const sorted = [...cases].sort((a, b) => {
     let av: string | number = a[sortField] ?? "";
@@ -138,6 +160,20 @@ export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
         />
 
         <main className="flex-1 p-6 overflow-auto">
+          {loadError && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">{loadError}</div>}
+          {(cases.some((c) => c.dataSource === "mock") || audit.some((entry) => entry.dataSource === "mock")) && (
+            <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="status">
+              Demo mode: local mock cases or audit entries are shown here; they are not backend records.
+            </div>
+          )}
+          <section className="mb-6 rounded-xl border border-slate-200 bg-white p-5" aria-label="Analyze clinical note">
+            <h2 className="mb-2 text-sm font-semibold text-slate-900">Analyze a clinical note</h2>
+            <textarea value={noteText} onChange={(e) => setNoteText(e.target.value)} rows={4} className="w-full rounded-lg border border-slate-300 p-3 text-sm" placeholder="Paste discharge note text" aria-label="Clinical note text" />
+            {analysisError && <p className="mt-2 text-sm text-red-700" role="alert">{analysisError}</p>}
+            <button onClick={analyzeNote} disabled={analyzing || !noteText.trim()} className="mt-3 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+              {analyzing ? "Analyzing…" : "Analyze note"}
+            </button>
+          </section>
           {/* Stats row */}
           <div className="grid grid-cols-4 gap-4 mb-6">
             {stats.map((s) => (

@@ -9,8 +9,9 @@ Integrates:
 """
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
+from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -23,10 +24,16 @@ from .schemas import (
     CodeResult, DocumentReview, ReviewAction,
     LoginRequest, LoginResponse, UserSchema,
     CaseItem, PredictedCode, AttentionSpan,
-    AnalyzeRequest, ConfirmRequest, OverrideRequest, SubmitRequest,
+    AnalyzeRequest, ConfirmRequest, RejectRequest, OverrideRequest, SubmitRequest,
     AuditEntry, SystemSettings,
 )
 from .pipeline_service import ClinicalCodingPipeline
+from .storage import SQLiteCaseAuditStore
+
+
+def _utc_now() -> datetime:
+    """Return an aware UTC timestamp for API and audit records."""
+    return datetime.now(timezone.utc)
 
 app = FastAPI(
     title="Clinical Coding Review Dashboard API",
@@ -45,12 +52,22 @@ app.add_middleware(
 # Instantiate the live Neuro-Symbolic Pipeline
 pipeline = ClinicalCodingPipeline(review_threshold=0.50, auto_accept_threshold=0.85)
 
-# System settings
-settings_state = SystemSettings()
+# SQLite-backed state is loaded into lists to preserve the existing route logic.
+DATABASE_PATH = os.environ.get(
+    "ACCS_DB_PATH",
+    os.path.join(PROJECT_ROOT, "data", "accs_dashboard.sqlite3"),
+)
+storage = SQLiteCaseAuditStore(DATABASE_PATH)
+CASES_STORE, AUDIT_STORE = storage.load_state()
+settings_state = SystemSettings(**(storage.load_settings() or {}))
+pipeline.update_thresholds(
+    review_threshold=settings_state.review_threshold,
+    auto_accept_threshold=settings_state.auto_accept_threshold,
+)
 
-# In-memory store initialized with seed clinical discharge cases
-CASES_STORE: List[dict] = []
-AUDIT_STORE: List[dict] = []
+
+def _persist_state():
+    storage.save_state(CASES_STORE, AUDIT_STORE)
 
 
 def _seed_initial_cases():
@@ -113,8 +130,10 @@ def _seed_initial_cases():
     })
 
 
-# Run initial seed
-_seed_initial_cases()
+# Seed sample data only for a new/empty database; existing cases survive restart.
+if not CASES_STORE:
+    _seed_initial_cases()
+    _persist_state()
 
 
 # ==============================================================================
@@ -128,7 +147,7 @@ def health():
         "version": "2.0.0",
         "modules": [
             "module1_ingestion (SlidingWindow)",
-            "module2_classifier (BioClinicalBERT & Weighted Classification)",
+            "module2_classifier (not configured: no trained checkpoint or inference interface)",
             "module3_verification (NeuroSymbolic Verification)",
             "module4_dashboard (HITL Review)",
         ],
@@ -146,6 +165,7 @@ def get_settings():
 def update_settings(new_settings: SystemSettings):
     global settings_state
     settings_state = new_settings
+    storage.save_settings(new_settings.model_dump())
     pipeline.update_thresholds(
         review_threshold=new_settings.review_threshold,
         auto_accept_threshold=new_settings.auto_accept_threshold,
@@ -163,7 +183,7 @@ def login(creds: LoginRequest):
         raise HTTPException(status_code=400, detail="Username and password are required.")
 
     name = creds.username.split("@")[0].capitalize() if "@" in creds.username else creds.username
-    token = f"jwt-token-{int(datetime.utcnow().timestamp() * 1000)}"
+    token = f"jwt-token-{int(_utc_now().timestamp() * 1000)}"
     return LoginResponse(
         token=token,
         user=UserSchema(
@@ -198,29 +218,33 @@ def get_case(case_id: str):
 @app.post("/api/cases/analyze", response_model=CaseItem)
 def analyze_note(req: AnalyzeRequest):
     """
-    Analyzes any raw clinical discharge summary dynamically through Modules 1, 2, and 3.
+    Analyzes a note through ingestion, rule-based demo matching, and verification.
     """
     doc_id = req.document_id or f"CASE-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-    new_case = pipeline.analyze_document(
-        document_id=doc_id,
-        raw_text=req.text,
-        patient_id=req.patient_id,
-    )
+    try:
+        new_case = pipeline.analyze_document(
+            document_id=doc_id,
+            raw_text=req.text,
+            patient_id=req.patient_id,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Clinical note analysis failed: {exc}") from exc
 
     # Insert at top of list
     CASES_STORE.insert(0, new_case)
 
     # Log analysis event
     AUDIT_STORE.insert(0, {
-        "id": f"AUD-{int(datetime.utcnow().timestamp() * 1000)}",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "id": f"AUD-{uuid4().hex}",
+        "timestamp": _utc_now().isoformat().replace("+00:00", "Z"),
         "coderName": "System Pipeline",
         "caseId": doc_id,
         "action": "Predicted",
         "codeAffected": f"{len(new_case['predictedCodes'])} codes",
         "oldValue": "—",
-        "newValue": "Generated via sliding-window & neuro-symbolic verifier",
+        "newValue": "Rule-based demo keyword matching + neuro-symbolic verifier",
     })
+    _persist_state()
 
     return new_case
 
@@ -238,8 +262,8 @@ def confirm_code(case_id: str, code_id: str, req: ConfirmRequest):
     code_obj["userAction"] = "confirmed"
 
     AUDIT_STORE.insert(0, {
-        "id": f"AUD-{int(datetime.utcnow().timestamp() * 1000)}",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "id": f"AUD-{uuid4().hex}",
+        "timestamp": _utc_now().isoformat().replace("+00:00", "Z"),
         "coderName": req.coderName,
         "caseId": case_id,
         "action": "Confirmed",
@@ -247,7 +271,36 @@ def confirm_code(case_id: str, code_id: str, req: ConfirmRequest):
         "oldValue": "—",
         "newValue": "Confirmed",
     })
+    _persist_state()
     return {"status": "ok", "message": f"Code {code_obj['code']} confirmed"}
+
+
+@app.post("/api/cases/{case_id}/codes/{code_id}/reject")
+def reject_code(case_id: str, code_id: str, req: RejectRequest):
+    case = next((c for c in CASES_STORE if c["id"] == case_id), None)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found.")
+
+    code_obj = next((cd for cd in case["predictedCodes"] if cd["id"] == code_id), None)
+    if not code_obj:
+        raise HTTPException(status_code=404, detail="Code not found.")
+    if not req.reason.strip():
+        raise HTTPException(status_code=422, detail="A reason is required to reject a code.")
+
+    code_obj["userAction"] = "rejected"
+    code_obj["userReason"] = req.reason.strip()
+    AUDIT_STORE.insert(0, {
+        "id": f"AUD-{uuid4().hex}",
+        "timestamp": _utc_now().isoformat().replace("+00:00", "Z"),
+        "coderName": req.coderName,
+        "caseId": case_id,
+        "action": "Rejected",
+        "codeAffected": code_obj["code"],
+        "oldValue": "Pending review",
+        "newValue": req.reason.strip(),
+    })
+    _persist_state()
+    return {"status": "ok", "message": f"Code {code_obj['code']} rejected"}
 
 
 @app.post("/api/cases/{case_id}/codes/{code_id}/override")
@@ -266,8 +319,8 @@ def override_code(case_id: str, code_id: str, req: OverrideRequest):
     code_obj["overrideReason"] = req.reason
 
     AUDIT_STORE.insert(0, {
-        "id": f"AUD-{int(datetime.utcnow().timestamp() * 1000)}",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "id": f"AUD-{uuid4().hex}",
+        "timestamp": _utc_now().isoformat().replace("+00:00", "Z"),
         "coderName": req.coderName,
         "caseId": case_id,
         "action": "Overridden",
@@ -275,6 +328,7 @@ def override_code(case_id: str, code_id: str, req: OverrideRequest):
         "oldValue": old_code,
         "newValue": req.newCode,
     })
+    _persist_state()
     return {"status": "ok", "message": f"Code {old_code} overridden to {req.newCode}"}
 
 
@@ -288,8 +342,8 @@ def submit_case(case_id: str, req: SubmitRequest):
     case["submittedToBilling"] = True
 
     AUDIT_STORE.insert(0, {
-        "id": f"AUD-{int(datetime.utcnow().timestamp() * 1000)}",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "id": f"AUD-{uuid4().hex}",
+        "timestamp": _utc_now().isoformat().replace("+00:00", "Z"),
         "coderName": req.coderName,
         "caseId": case_id,
         "action": "Submitted",
@@ -297,6 +351,7 @@ def submit_case(case_id: str, req: SubmitRequest):
         "oldValue": "—",
         "newValue": "Submitted to billing",
     })
+    _persist_state()
     return {"status": "ok", "message": "Case submitted to billing"}
 
 
@@ -343,8 +398,8 @@ def predict(document_id: str, text: str):
 @app.post("/review")
 def submit_review(action: ReviewAction):
     AUDIT_STORE.insert(0, {
-        "id": f"AUD-{int(datetime.utcnow().timestamp() * 1000)}",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "id": f"AUD-{uuid4().hex}",
+        "timestamp": _utc_now().isoformat().replace("+00:00", "Z"),
         "coderName": "Reviewer",
         "caseId": action.document_id,
         "action": action.human_action.capitalize(),
@@ -352,6 +407,7 @@ def submit_review(action: ReviewAction):
         "oldValue": "—",
         "newValue": action.human_action,
     })
+    _persist_state()
     return {"status": "recorded", "log_size": len(AUDIT_STORE)}
 
 

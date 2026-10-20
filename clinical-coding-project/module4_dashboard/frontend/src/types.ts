@@ -15,7 +15,7 @@ export interface AuthState {
 
 export type CaseStatus = "Processing" | "Pending Review" | "Completed";
 export type VerificationStatus = "VERIFIED" | "PARENT CODE" | "UNVERIFIED";
-export type CodeAction = "Predicted" | "Confirmed" | "Overridden" | "Submitted";
+export type CodeAction = "Predicted" | "Confirmed" | "Overridden" | "Rejected" | "Submitted";
 
 export interface AttentionSpan {
   startIdx: number;
@@ -31,7 +31,8 @@ export interface PredictedCode {
   verificationStatus: VerificationStatus;
   attentionSpans: AttentionSpan[];
   supportingEvidence: string;
-  userAction?: "confirmed" | "overridden";
+  userAction?: "confirmed" | "overridden" | "rejected";
+  userReason?: string;
   overrideCode?: string;
   overrideReason?: string;
 }
@@ -46,6 +47,9 @@ export interface CaseItem {
   words: string[];
   predictedCodes: PredictedCode[];
   submittedToBilling?: boolean;
+  analysisSource?: "rule_based_demo" | "mock_demo" | string;
+  analysisSourceLabel?: string;
+  dataSource?: "backend" | "mock";
 }
 
 export interface AuditEntry {
@@ -57,6 +61,16 @@ export interface AuditEntry {
   codeAffected: string;
   oldValue: string;
   newValue: string;
+  dataSource?: "backend" | "mock";
+}
+
+export interface SystemSettings {
+  auto_accept_threshold: number;
+  review_threshold: number;
+  model_name: string;
+  ontology_version: string;
+  sliding_window_size: number;
+  sliding_stride: number;
 }
 
 export interface SystemUser {

@@ -322,7 +322,12 @@ export const MOCK_CASES: CaseItem[] = [
       },
     ],
   },
-];
+].map((c) => ({
+  ...c,
+  analysisSource: "mock_demo",
+  analysisSourceLabel: "Mock demo case; codes are illustrative only",
+  dataSource: "mock" as const,
+}));
 
 export const MOCK_AUDIT: AuditEntry[] = [
   {

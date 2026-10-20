@@ -53,6 +53,9 @@ export default function SignIn({ onSignIn }: Props) {
           <p className="text-sm text-slate-500 mb-8">
             Access the Intelligent Coding System dashboard
           </p>
+          <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900" role="status">
+            Demo authentication: this prototype does not verify real accounts or enforce role permissions.
+          </div>
 
           <form onSubmit={handleSubmit} className="space-y-5" noValidate>
             {/* Error state */}

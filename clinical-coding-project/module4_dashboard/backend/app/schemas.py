@@ -65,7 +65,8 @@ class PredictedCode(BaseModel):
     attentionSpans: List[AttentionSpan] = []
     supportingEvidence: str
     rejectReason: Optional[str] = None
-    userAction: Optional[str] = None  # "confirmed" | "overridden"
+    userAction: Optional[str] = None  # "confirmed" | "overridden" | "rejected"
+    userReason: Optional[str] = None
     overrideCode: Optional[str] = None
     overrideReason: Optional[str] = None
 
@@ -80,6 +81,8 @@ class CaseItem(BaseModel):
     words: List[str]
     predictedCodes: List[PredictedCode]
     submittedToBilling: Optional[bool] = False
+    analysisSource: Optional[str] = None
+    analysisSourceLabel: Optional[str] = None
 
 
 class AnalyzeRequest(BaseModel):
@@ -89,6 +92,11 @@ class AnalyzeRequest(BaseModel):
 
 
 class ConfirmRequest(BaseModel):
+    coderName: str = "Medical Coder"
+
+
+class RejectRequest(BaseModel):
+    reason: str
     coderName: str = "Medical Coder"
 
 
@@ -114,9 +122,9 @@ class AuditEntry(BaseModel):
 
 
 class SystemSettings(BaseModel):
-    auto_accept_threshold: float = 0.85
-    review_threshold: float = 0.50
-    model_name: str = "emilyalsentzer/Bio_ClinicalBERT"
+    auto_accept_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    review_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    model_name: str = "emilyalsentzer/Bio_ClinicalBERT (base encoder; no task checkpoint)"
     ontology_version: str = "ICD-10-CM 2026"
     sliding_window_size: int = 512
     sliding_stride: int = 256
