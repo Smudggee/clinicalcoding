@@ -42,7 +42,7 @@ export default function App() {
 
   return (
     <>
-      {nav.page === "dashboard" && (
+      {(nav.page === "dashboard" || (!["case-review", "audit-trail", "admin"].includes(nav.page))) && (
         <Dashboard auth={auth} onSignOut={handleSignOut} onNavigate={navigate} />
       )}
       {nav.page === "case-review" && nav.selectedCaseId && (

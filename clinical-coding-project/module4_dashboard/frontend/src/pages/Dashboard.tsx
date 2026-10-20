@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import type { AuthState, CaseItem, AuditEntry } from "../types";
-import { apiGetCases, apiGetAudit } from "../api";
+import { apiGetCases, apiGetAudit, apiAnalyzeNote } from "../api";
 import { CaseStatusBadge } from "../components/StatusBadge";
 import { TableRowSkeleton } from "../components/Skeleton";
 import Header from "../components/Header";
 import Sidebar from "../components/Sidebar";
+import Modal from "../components/Modal";
 import type { Page } from "../types";
 
 interface Props {
@@ -25,6 +26,25 @@ export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
   const [sortField, setSortField] = useState<SortField>("submittedAt");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [page, setPage] = useState(0);
+  const [isAnalyzeOpen, setIsAnalyzeOpen] = useState(false);
+  const [customNote, setCustomNote] = useState("");
+  const [patientId, setPatientId] = useState("P-9901");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+  async function handleAnalyze() {
+    if (!customNote.trim()) return;
+    setIsAnalyzing(true);
+    try {
+      const res = await apiAnalyzeNote(customNote, patientId);
+      setIsAnalyzeOpen(false);
+      setCustomNote("");
+      onNavigate("case-review", res.id);
+    } catch (e) {
+      alert("Analysis failed: " + e);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -167,16 +187,24 @@ export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
             <div className="flex-1 bg-white rounded-xl border border-slate-200 overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-slate-900">Pending Cases</h2>
-                <button
-                  onClick={load}
-                  className="text-xs text-primary hover:underline flex items-center gap-1"
-                >
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                    <path d="M10.5 6a4.5 4.5 0 11-1.5-3.35" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" fill="none" />
-                    <path d="M9 1v3h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" fill="none" />
-                  </svg>
-                  Refresh
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setIsAnalyzeOpen(true)}
+                    className="bg-blue-600 text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-blue-700 transition flex items-center gap-1.5 shadow-sm"
+                  >
+                    <span>⚡</span> Test My Model (New Note)
+                  </button>
+                  <button
+                    onClick={load}
+                    className="text-xs text-primary hover:underline flex items-center gap-1"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                      <path d="M10.5 6a4.5 4.5 0 11-1.5-3.35" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" fill="none" />
+                      <path d="M9 1v3h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" fill="none" />
+                    </svg>
+                    Refresh
+                  </button>
+                </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm" aria-label="Pending cases">
@@ -366,6 +394,97 @@ export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
           </div>
         </main>
       </div>
+
+      {isAnalyzeOpen && (
+        <Modal
+          title="⚡ Test Person 2's Bio_ClinicalBERT Model"
+          wide
+          onClose={() => setIsAnalyzeOpen(false)}
+          footer={
+            <>
+              <button
+                type="button"
+                onClick={() => setIsAnalyzeOpen(false)}
+                className="px-4 py-2 border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isAnalyzing || !customNote.trim()}
+                onClick={handleAnalyze}
+                className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition disabled:opacity-50 flex items-center gap-2"
+              >
+                {isAnalyzing ? (
+                  <>
+                    <span className="animate-spin text-base">⏳</span> Running Transformer...
+                  </>
+                ) : (
+                  "Predict ICD-10 Codes →"
+                )}
+              </button>
+            </>
+          }
+        >
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Patient Identifier
+              </label>
+              <input
+                type="text"
+                value={patientId}
+                onChange={(e) => setPatientId(e.target.value)}
+                className="w-full text-sm border border-slate-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="e.g. P-8042"
+              />
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-semibold text-slate-700">
+                  Clinical Discharge Note / Summary
+                </label>
+                <span className="text-xs text-slate-400">Quick fill sample:</span>
+              </div>
+              <div className="flex gap-2 mb-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCustomNote(
+                      "Patient is a 68-year-old male presenting with acute crushing chest pain radiating to left jaw. ECG confirms acute anterior ST-elevation myocardial infarction (STEMI). History of essential primary hypertension and poorly controlled type 2 diabetes mellitus without complications. Started on dual antiplatelet therapy and emergency catheterization."
+                    )
+                  }
+                  className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1 rounded border border-slate-200"
+                >
+                  Heart Attack + HTN
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCustomNote(
+                      "Patient with severe COPD acute exacerbation presenting with purulent productive cough, fever of 38.8C, and hypoxia requiring 3L nasal cannula. History of chronic kidney disease stage 3. Administered IV antibiotics, nebulized bronchodilators, and systemic steroids."
+                    )
+                  }
+                  className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1 rounded border border-slate-200"
+                >
+                  COPD Exacerbation + CKD
+                </button>
+              </div>
+              <textarea
+                rows={7}
+                value={customNote}
+                onChange={(e) => setCustomNote(e.target.value)}
+                placeholder="Type or paste any clinical note here..."
+                className="w-full text-sm font-sans border border-slate-200 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <p className="text-xs text-slate-500 bg-blue-50 p-2.5 rounded-lg border border-blue-100">
+              💡 <b>Under the hood:</b> This note will be split via Person 1's sliding window (512 tokens, 256 stride), passed to your <b>Bio_ClinicalBERT Transformer</b> for multi-label inference, aggregated via max-pooling, verified by Person 3, and visualized on the HITL review screen!
+            </p>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

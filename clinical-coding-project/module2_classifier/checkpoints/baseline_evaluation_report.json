@@ -1,0 +1,12 @@
+{
+  "precision_micro": 0.125,
+  "recall_micro": 0.125,
+  "f1_micro": 0.125,
+  "precision_macro": 0.023809523809523808,
+  "recall_macro": 0.07142857142857142,
+  "f1_macro": 0.03571428571428571,
+  "precision_at_5": 0.26666666666666666,
+  "test_samples": 3,
+  "num_labels": 14,
+  "decision_threshold": 0.3
+}
