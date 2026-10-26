@@ -1,0 +1,6 @@
+patient_id,text,codes
+P001,Patient has a cough,ICD_A
+P002,Patient has a fever,ICD_B
+P001,Patient has a cough,ICD_A
+P003,Patient has a headache,ICD_A
+P004,,ICD_B

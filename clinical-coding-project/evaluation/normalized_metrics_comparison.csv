@@ -1,0 +1,7 @@
+﻿sample,original_WER_percent,normalized_WER_percent,original_CER_percent,normalized_CER_percent
+sample_01,50.0,37.5,8.89,11.11
+sample_02,16.67,11.76,2.08,2.33
+sample_03,14.29,5.26,2.04,2.33
+sample_04,83.33,26.09,13.11,12.73
+sample_05,50.0,16.0,12.9,9.09
+OVERALL,42.42,19.0,8.3,7.76

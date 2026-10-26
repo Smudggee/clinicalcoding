@@ -1,0 +1,5 @@
+patient_id,split
+P001,train
+P002,train
+P003,validation
+P004,test

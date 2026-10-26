@@ -10,3 +10,8 @@ build/
 *.pt
 data/mimic/
 .pytest_cache/
+# Temporary audio files
+evaluation/temp_wav/
+
+# Local model weights
+models/
