@@ -1,38 +1,106 @@
 """
 BioClinicalBERT-based multi-label classifier (Section III-B, Module 2).
 
-Encodes one window at a time; document-level scores are produced by
-aggregating per-window probabilities (see module1_ingestion.sliding_window
-.aggregate_max / aggregate_mean), per Eq. (1).
+Encodes clinical text windows; document-level scores are produced by
+aggregating per-window probabilities per Eq. (1): p(c|D) = max_k p_k(c).
+Includes checkpoint saving, loading, and batch probability inference.
 """
-from typing import List, Dict
+import os
+import json
+from typing import List, Dict, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
 
 class BioClinicalBERTClassifier(nn.Module):
-    def __init__(self, num_labels: int,
-                 model_name: str = "emilyalsentzer/Bio_ClinicalBERT",
-                 dropout: float = 0.1):
+    """
+    Transformer-based multi-label ICD-10 classifier.
+    Uses a pretrained biomedical encoder (default Bio_ClinicalBERT) with
+    dropout and a linear classification projection layer.
+    """
+    def __init__(
+        self,
+        num_labels: int,
+        model_name: str = "emilyalsentzer/Bio_ClinicalBERT",
+        dropout: float = 0.1,
+        hidden_size: Optional[int] = None
+    ):
         super().__init__()
-        from transformers import AutoModel
-        self.encoder = AutoModel.from_pretrained(model_name)
-        hidden_size = self.encoder.config.hidden_size
-        self.dropout = nn.Dropout(dropout)
-        self.classifier = nn.Linear(hidden_size, num_labels)
+        self.num_labels = num_labels
+        self.model_name = model_name
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        try:
+            from transformers import AutoModel, AutoConfig
+            config = AutoConfig.from_pretrained(model_name)
+            self.encoder = AutoModel.from_pretrained(model_name, config=config)
+            h_size = config.hidden_size
+        except Exception:
+            # Fallback for environments without internet / mock mode
+            h_size = hidden_size or 768
+            self.encoder = nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(d_model=h_size, nhead=8, batch_first=True),
+                num_layers=2
+            )
+
+        self.dropout = nn.Dropout(dropout)
+        self.classifier = nn.Linear(h_size, num_labels)
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Returns raw classification logits of shape (batch_size, num_labels).
+        """
         outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
-        cls_repr = outputs.last_hidden_state[:, 0, :]  # [CLS] token
+        if hasattr(outputs, "last_hidden_state"):
+            cls_repr = outputs.last_hidden_state[:, 0, :]
+        elif hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
+            cls_repr = outputs.pooler_output
+        elif isinstance(outputs, (tuple, list)):
+            cls_repr = outputs[0][:, 0, :]
+        else:
+            cls_repr = outputs[:, 0, :]
+
         cls_repr = self.dropout(cls_repr)
-        return self.classifier(cls_repr)  # logits, shape (batch, num_labels)
+        logits = self.classifier(cls_repr)
+        return logits
 
     @torch.no_grad()
-    def predict_window(self, tokenizer, window_text: str, device="cpu") -> Dict[str, float]:
-        """Convenience method: window text -> {code_index: probability}."""
+    def predict_proba(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Returns sigmoid probabilities of shape (batch_size, num_labels).
+        """
         self.eval()
-        enc = tokenizer(window_text, truncation=True, max_length=512,
-                         return_tensors="pt").to(device)
-        logits = self.forward(enc["input_ids"], enc["attention_mask"])
-        probs = torch.sigmoid(logits).squeeze(0)
-        return {i: p.item() for i, p in enumerate(probs)}
+        logits = self.forward(input_ids=input_ids, attention_mask=attention_mask)
+        return torch.sigmoid(logits)
+
+    def save_checkpoint(self, save_path: str, label_map: Optional[Dict[str, int]] = None, config: Optional[Dict] = None):
+        """
+        Saves model weights, label map, and hyperparameter configuration.
+        """
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        checkpoint = {
+            "model_state_dict": self.state_dict(),
+            "num_labels": self.num_labels,
+            "model_name": self.model_name,
+            "label_map": label_map or {},
+            "config": config or {}
+        }
+        torch.save(checkpoint, save_path)
+        print(f"Model checkpoint saved successfully to: {save_path}")
+
+    @classmethod
+    def load_checkpoint(cls, checkpoint_path: str, device: str = "cpu") -> Tuple["BioClinicalBERTClassifier", Dict[str, int]]:
+        """
+        Loads a saved checkpoint and returns (model, label_map).
+        """
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        num_labels = checkpoint.get("num_labels", len(checkpoint.get("label_map", {})))
+        model_name = checkpoint.get("model_name", "emilyalsentzer/Bio_ClinicalBERT")
+
+        model = cls(num_labels=num_labels, model_name=model_name)
+        model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        model.to(device)
+        model.eval()
+
+        label_map = checkpoint.get("label_map", {})
+        print(f"Loaded checkpoint from {checkpoint_path} with {num_labels} labels on {device}.")
+        return model, label_map

@@ -131,6 +131,16 @@ class ClinicalCodingPipeline:
             auto_accept_threshold=auto_accept_threshold,
         )
 
+        self.inference_engine = None
+        checkpoint_path = os.path.join(PROJECT_ROOT, "module2_classifier", "checkpoints", "best_model.pt")
+        if os.path.exists(checkpoint_path):
+            try:
+                from module2_classifier.inference import ClinicalInferenceEngine
+                self.inference_engine = ClinicalInferenceEngine(checkpoint_path=checkpoint_path)
+                print(f"[Pipeline] Successfully connected Person 2 Bio_ClinicalBERT model from {checkpoint_path}")
+            except Exception as e:
+                print(f"[Pipeline] Note: Using fallback candidate matcher ({e})")
+
     def update_thresholds(self, review_threshold: float, auto_accept_threshold: float):
         self.review_threshold = review_threshold
         self.auto_accept_threshold = auto_accept_threshold
@@ -146,53 +156,77 @@ class ClinicalCodingPipeline:
         ingested = self.chunker.chunk(document_id=document_id, text=normalized_text)
         words = tokenize_words(normalized_text)
 
-        # 1. Module 2 candidate extraction across sliding windows
+        # 1. Module 2 candidate extraction (Transformer Model with fallback)
         candidate_predictions = []
-        for code, info in ICD10_KNOWLEDGE_BASE.items():
-            match_found = False
-            best_evidence = ""
-            best_start_char = -1
-            confidence_boost = 0.0
+        if self.inference_engine is not None:
+            try:
+                clf_doc = self.inference_engine.predict(normalized_text, document_id=document_id, threshold=0.15)
+                for p in clf_doc.predictions:
+                    info = ICD10_KNOWLEDGE_BASE.get(p.code, {
+                        "description": f"Diagnosis ({p.code})",
+                        "primary_terms": [p.code.lower()],
+                        "supporting_terms": [],
+                        "base_confidence": p.probability,
+                    })
+                    candidate_predictions.append({
+                        "code": p.code,
+                        "description": info["description"],
+                        "probability": round(float(p.probability), 3),
+                        "evidence_span": p.evidence_span,
+                        "evidence_start_char": p.evidence_start_char,
+                        "supporting_terms": info.get("supporting_terms", []),
+                        "primary_terms": info.get("primary_terms", [p.code.lower()]),
+                    })
+            except Exception as e:
+                print(f"[Pipeline] Transformer inference notice: {e}, using rule fallback.")
 
-            # Find matching primary term
-            for term in info["primary_terms"]:
-                pattern = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
-                match = pattern.search(normalized_text)
-                if match:
-                    match_found = True
-                    best_start_char = match.start()
-                    # Context window of 100 chars around the match
-                    span_start = max(0, best_start_char - 40)
-                    span_end = min(len(normalized_text), match.end() + 60)
-                    best_evidence = normalized_text[span_start:span_end].replace("\n", " ").strip()
-                    break
+        # Fallback to dictionary pattern matching if no model predictions
+        if not candidate_predictions:
+            for code, info in ICD10_KNOWLEDGE_BASE.items():
+                match_found = False
+                best_evidence = ""
+                best_start_char = -1
+                confidence_boost = 0.0
 
-            if match_found:
-                # Calculate window-level presence and aggregation
-                window_scores = []
-                for w_idx, win in enumerate(ingested.windows):
-                    win_score = 0.0
-                    if any(re.search(rf"\b{re.escape(t)}\b", win.text, re.IGNORECASE) for t in info["primary_terms"]):
-                        win_score = info["base_confidence"]
-                        # Count supporting terms in this window
-                        sup_hits = sum(1 for st in info["supporting_terms"] if re.search(rf"\b{re.escape(st)}\b", win.text, re.IGNORECASE))
-                        win_score = min(0.98, win_score + sup_hits * 0.02)
-                    window_scores.append(win_score)
+                # Find matching primary term
+                for term in info["primary_terms"]:
+                    pattern = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+                    match = pattern.search(normalized_text)
+                    if match:
+                        match_found = True
+                        best_start_char = match.start()
+                        # Context window of 100 chars around the match
+                        span_start = max(0, best_start_char - 40)
+                        span_end = min(len(normalized_text), match.end() + 60)
+                        best_evidence = normalized_text[span_start:span_end].replace("\n", " ").strip()
+                        break
 
-                # Aggregation Eq. 1: p(c|D) = max_k p_k(c)
-                doc_probability = aggregate_max(window_scores) if window_scores else info["base_confidence"]
-                if doc_probability == 0.0:
-                    doc_probability = info["base_confidence"]
+                if match_found:
+                    # Calculate window-level presence and aggregation
+                    window_scores = []
+                    for w_idx, win in enumerate(ingested.windows):
+                        win_score = 0.0
+                        if any(re.search(rf"\b{re.escape(t)}\b", win.text, re.IGNORECASE) for t in info["primary_terms"]):
+                            win_score = info["base_confidence"]
+                            # Count supporting terms in this window
+                            sup_hits = sum(1 for st in info["supporting_terms"] if re.search(rf"\b{re.escape(st)}\b", win.text, re.IGNORECASE))
+                            win_score = min(0.98, win_score + sup_hits * 0.02)
+                        window_scores.append(win_score)
 
-                candidate_predictions.append({
-                    "code": code,
-                    "description": info["description"],
-                    "probability": round(doc_probability, 3),
-                    "evidence_span": best_evidence,
-                    "evidence_start_char": best_start_char,
-                    "supporting_terms": info["supporting_terms"],
-                    "primary_terms": info["primary_terms"],
-                })
+                    # Aggregation Eq. 1: p(c|D) = max_k p_k(c)
+                    doc_probability = aggregate_max(window_scores) if window_scores else info["base_confidence"]
+                    if doc_probability == 0.0:
+                        doc_probability = info["base_confidence"]
+
+                    candidate_predictions.append({
+                        "code": code,
+                        "description": info["description"],
+                        "probability": round(doc_probability, 3),
+                        "evidence_span": best_evidence,
+                        "evidence_start_char": best_start_char,
+                        "supporting_terms": info["supporting_terms"],
+                        "primary_terms": info["primary_terms"],
+                    })
 
         # 2. Module 3 Neuro-symbolic verification
         predicted_codes = []
