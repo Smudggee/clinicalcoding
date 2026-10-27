@@ -1,12 +1,12 @@
 {
-  "precision_micro": 0.125,
-  "recall_micro": 0.125,
-  "f1_micro": 0.125,
-  "precision_macro": 0.023809523809523808,
+  "precision_micro": 0.8266666666666667,
+  "recall_micro": 0.3780487804878049,
+  "f1_micro": 0.5188284518828452,
+  "precision_macro": 0.05904761904761905,
   "recall_macro": 0.07142857142857142,
-  "f1_macro": 0.03571428571428571,
-  "precision_at_5": 0.26666666666666666,
-  "test_samples": 3,
+  "f1_macro": 0.06465067778936393,
+  "precision_at_5": 0.30666666666666664,
+  "test_samples": 75,
   "num_labels": 14,
-  "decision_threshold": 0.3
+  "decision_threshold": 0.4
 }

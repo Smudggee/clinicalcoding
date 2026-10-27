@@ -1,10 +1,10 @@
 {
-  "epochs": 3,
-  "batch_size": 2,
+  "epochs": 2,
+  "batch_size": 4,
   "lr": 2e-05,
   "model_name": "emilyalsentzer/Bio_ClinicalBERT",
   "num_labels": 14,
-  "loss_type": "BCEWithLogitsLoss",
-  "best_val_f1_micro": 0.2857142857142857,
-  "best_val_loss": 0.4950498938560486
+  "loss_type": "FocalLoss",
+  "best_val_f1_micro": 0.37383177570093457,
+  "best_val_loss": 0.032827921407787425
 }
