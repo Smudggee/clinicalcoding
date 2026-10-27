@@ -1,0 +1,71 @@
+================================================================================
+                    ACCS - TEAM EXTERNAL FILES & SETUP GUIDE
+================================================================================
+
+This guide explains which files are stored in GitHub and which large binary 
+files (like PyTorch model weights) need to be downloaded from Google Drive 
+or generated locally.
+
+--------------------------------------------------------------------------------
+1. MODEL CHECKPOINT: best_model.pt (~430 MB)
+--------------------------------------------------------------------------------
+Because GitHub enforces a strict 100 MB file limit, the trained PyTorch 
+Bio_ClinicalBERT binary weights are excluded from Git via .gitignore.
+
+WHERE TO PASTE THIS FILE:
+  clinical-coding-project/module2_classifier/checkpoints/best_model.pt
+
+OPTION A (Recommended - Download from Google Drive):
+  1. Download `best_model.pt` from the team Google Drive link shared by Person 2.
+  2. Paste it directly into the folder:
+     clinical-coding-project/module2_classifier/checkpoints/
+
+OPTION B (Regenerate locally with 1 command):
+  If you do not have the Google Drive download, you can train and generate 
+  `best_model.pt` directly on your own machine using the authentic MIMIC-IV 
+  splits included in the GitHub repository:
+  
+  cd clinical-coding-project
+  python -m module2_classifier.train --train_data data/train.csv --val_data data/val.csv --epochs 2 --batch_size 4
+
+--------------------------------------------------------------------------------
+2. DATASET FILES (Already in GitHub - No Action Needed)
+--------------------------------------------------------------------------------
+The authentic MIMIC-IV clinical dataset splits are already committed to Git:
+  - clinical-coding-project/data/train.csv  (592 authentic clinical notes)
+  - clinical-coding-project/data/val.csv    (74 authentic clinical notes)
+  - clinical-coding-project/data/test.csv   (75 authentic clinical notes)
+  - clinical-coding-project/data/label_map.json (14 canonical ICD-10 codes)
+
+You do NOT need to download any raw CSVs manually. When you pull this branch, 
+the complete training and evaluation data will already be in place.
+
+--------------------------------------------------------------------------------
+3. WHISPER ASR AUDIO MODEL (Person 1 Module)
+--------------------------------------------------------------------------------
+The Whisper speech-to-text models (`sajilck/whisper-small-malayalam-v2` or 
+`faster-whisper`) are automatically downloaded from Hugging Face into your 
+local cache (~/.cache/huggingface) the very first time you run an audio 
+transcription. No manual file pasting is required.
+
+--------------------------------------------------------------------------------
+4. HOW TO VERIFY YOUR LOCAL SETUP
+--------------------------------------------------------------------------------
+To test that your environment, model weights, and data are functioning:
+
+A) Run the automated test suite:
+   cd clinical-coding-project
+   python -m unittest discover tests
+
+B) Run live clinical note inference:
+   cd clinical-coding-project
+   python demo_inference.py
+
+C) Start the full-stack system:
+   - Root folder: Double-click `run_backend.bat` (Starts FastAPI on port 8000)
+   - Root folder: Double-click `run_frontend.bat` (Starts Dashboard on port 5173)
+   - Open browser: http://localhost:5173
+
+================================================================================
+Report any missing dependencies or issues to the group chat!
+================================================================================
