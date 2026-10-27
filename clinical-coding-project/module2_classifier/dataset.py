@@ -115,6 +115,20 @@ class ClinicalDataset(Dataset):
             "labels": labels
         }
 
+    def get_pos_weights(self, max_weight: float = 50.0) -> torch.Tensor:
+        """
+        Computes positive class weights pos_weight[c] = (N - pos) / max(pos, 1)
+        for class_weighted_bce / BCEWithLogitsLoss to mitigate class imbalance.
+        """
+        pos_counts = torch.zeros(self.num_labels, dtype=torch.float32)
+        total = len(self.records)
+        for r in self.records:
+            for code in r.get("codes", []):
+                if code in self.label_map:
+                    pos_counts[self.label_map[code]] += 1.0
+        pos_weights = (total - pos_counts) / torch.clamp(pos_counts, min=1.0)
+        return torch.clamp(pos_weights, min=1.0, max=max_weight)
+
 
 # Backwards compatibility alias
 ClinicalWindowDataset = ClinicalDataset

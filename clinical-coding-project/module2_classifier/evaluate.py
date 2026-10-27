@@ -13,8 +13,18 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from .model import BioClinicalBERTClassifier
-from .dataset import ClinicalDataset
+# Ensure project root is in sys.path for direct script execution
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+try:
+    from .model import BioClinicalBERTClassifier
+    from .dataset import ClinicalDataset
+except (ImportError, ValueError):
+    from module2_classifier.model import BioClinicalBERTClassifier
+    from module2_classifier.dataset import ClinicalDataset
+
 from evaluation.metrics import micro_macro_f1, precision_at_k
 
 
