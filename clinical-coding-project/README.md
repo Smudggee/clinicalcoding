@@ -53,9 +53,72 @@ python -m module1_ingestion.pipeline_demo
 
 For the dashboard:
 ```bash
-cd module4_dashboard/backend && pip install -r requirements.txt && uvicorn app.main:app --reload
-cd module4_dashboard/frontend && npm install && npm run dev
+cd module4_dashboard/backend
+python -m pip install -r ../../requirements.txt
+python -m uvicorn app.main:app --app-dir . --reload
+
+# In a second terminal, from the project root:
+cd module4_dashboard/frontend
+npm ci
+npm run dev
 ```
+
+The backend dependencies are listed in the project-root `requirements.txt`;
+there is no separate backend requirements file. From the project root, install
+them with `python -m pip install -r requirements.txt` before starting Uvicorn.
+
+For PowerShell, the same commands are:
+
+```powershell
+# Run these from the project root.
+python -m pip install -r requirements.txt
+Set-Location module4_dashboard\backend
+python -m uvicorn app.main:app --app-dir . --reload
+```
+
+In another PowerShell terminal:
+
+```powershell
+# In another terminal, run these from the project root.
+Set-Location module4_dashboard\frontend
+npm ci
+npm run dev
+```
+
+The API documentation is available at `http://localhost:8000/docs`. Cases,
+audit entries, and dashboard settings are stored in the local SQLite database
+at `data/accs_dashboard.sqlite3` by default. Set `ACCS_DB_PATH` before starting
+the backend to select another database file.
+
+### Module 4 workflow and current limits
+
+- Submit a note from the Dashboard or `POST /api/cases/analyze`. If a usable
+  Module 2 checkpoint is configured, the pipeline reports classifier inference;
+  otherwise it labels keyword candidates as `rule_based_demo`. A checkpoint
+  load or inference error is surfaced instead of silently switching sources.
+- Confirm, reject, override, and submit actions update the case and create audit
+  entries. Case data, audit history, and verifier thresholds persist in SQLite.
+- The Admin threshold is loaded from and saved to the backend. Its sample-case
+  preview is illustrative demo data, not a live workload forecast.
+- Local mock cases and audit entries are labelled in the dashboard. Admin user
+  management is local-only. Sign-in is prototype behavior: the app does not
+  verify real accounts or enforce role permissions.
+- The classifier checkpoint is distributed separately and is not committed.
+  Set `ACCS_CLASSIFIER_CHECKPOINT` to its local path. `/health` reports whether
+  classifier inference is ready, unconfigured, or failed to load.
+- Audio transcription is an experimental local Whisper feature. Install the
+  backend requirements, upload a supported audio file from the Dashboard, and
+  review and correct the editable transcript before analyzing it.
+- The ICD sample list and verifier rules are an academic prototype and do not
+  establish clinical coding correctness.
+
+Run the supported project test suite from the project root:
+
+```powershell
+python -m pytest -p no:cacheprovider tests/
+```
+
+Build the frontend from its directory with `npm run build`.
 
 ## Data
 
@@ -66,8 +129,8 @@ sample note in `data/sample_note.txt` to develop against.
 
 ## Status
 
-This is a **scaffold**, not a finished system: it gives you working,
-paper-aligned interfaces and a couple of reference implementations (sliding
-window aggregation, focal loss, a first pass at negation-based verification)
-so the group can start integrating and iterating immediately rather than
-agreeing on file layout in week 1.
+This repository contains a working academic prototype for ingestion, rule-based
+demo candidate generation, verification, and human review. It is not a finished
+or clinically validated coding system. The current dashboard workflow and its
+known classifier, authentication, and mock-data limitations are described
+above.

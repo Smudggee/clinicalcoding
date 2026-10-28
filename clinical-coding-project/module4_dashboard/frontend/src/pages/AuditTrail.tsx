@@ -83,6 +83,16 @@ export default function AuditTrail({ auth, onSignOut, onNavigate }: Props) {
         />
 
         <main className="flex-1 p-6 overflow-auto">
+          {!loading && entries.some((entry) => entry.dataSource === "mock") && (
+            <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="status">
+              Demo mode: these audit entries are local browser data and are not saved in the backend.
+            </div>
+          )}
+          {!loading && entries.some((entry) => entry.dataSource === "backend") && (
+            <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900" role="status">
+              These audit entries were loaded from the backend.
+            </div>
+          )}
           {/* Filters */}
           <div className="bg-white rounded-xl border border-slate-200 p-4 mb-5">
             <div className="flex items-end gap-4 flex-wrap">
@@ -124,7 +134,7 @@ export default function AuditTrail({ auth, onSignOut, onNavigate }: Props) {
                   style={{ width: 160 }}
                 >
                   <option value="">All actions</option>
-                  {["Predicted", "Confirmed", "Overridden", "Submitted"].map((a) => (
+                  {["Predicted", "Confirmed", "Overridden", "Rejected", "Submitted"].map((a) => (
                     <option key={a} value={a}>{a}</option>
                   ))}
                 </select>

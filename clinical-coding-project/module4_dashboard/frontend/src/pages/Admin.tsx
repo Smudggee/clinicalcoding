@@ -1,7 +1,8 @@
-import { useState } from "react";
-import type { AuthState } from "../types";
+import { useEffect, useState } from "react";
+import type { AuthState, SystemSettings } from "../types";
 import { MOCK_SYSTEM_USERS, MOCK_CASES } from "../mockData";
 import type { SystemUser, Role } from "../types";
+import { apiGetSettings, apiUpdateSettings } from "../api";
 import Header from "../components/Header";
 import Sidebar from "../components/Sidebar";
 import Modal from "../components/Modal";
@@ -23,16 +24,53 @@ const roleColors: Record<Role, string> = {
 
 export default function Admin({ auth, onSignOut, onNavigate, addToast }: Props) {
   const [users, setUsers] = useState<SystemUser[]>(MOCK_SYSTEM_USERS);
-  const [threshold, setThreshold] = useState(0.8);
+  const [settings, setSettings] = useState<SystemSettings | null>(null);
+  const [threshold, setThreshold] = useState(0.85);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const [editUser, setEditUser] = useState<SystemUser | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [newUser, setNewUser] = useState({ name: "", email: "", role: "Medical Coder" as Role });
 
-  // Compute auto-commit preview
-  const autoCommitCount = MOCK_CASES.filter((c) =>
+  useEffect(() => {
+    let active = true;
+    apiGetSettings()
+      .then((loadedSettings) => {
+        if (!active) return;
+        setSettings(loadedSettings);
+        setThreshold(loadedSettings.auto_accept_threshold);
+      })
+      .catch((error: unknown) => {
+        if (active) setSettingsError(error instanceof Error ? error.message : "Could not load backend settings.");
+      })
+      .finally(() => {
+        if (active) setSettingsLoading(false);
+      });
+    return () => { active = false; };
+  }, []);
+
+  async function handleSaveThreshold() {
+    if (!settings) return;
+    setSettingsSaving(true);
+    setSettingsError(null);
+    try {
+      const updated = await apiUpdateSettings({ ...settings, auto_accept_threshold: threshold });
+      setSettings(updated);
+      setThreshold(updated.auto_accept_threshold);
+      addToast("success", "Auto-accept threshold saved to the backend.");
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : "Could not save backend settings.");
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
+  // This preview uses fixture cases only; it does not represent a live workload.
+  const demoCasesAboveThreshold = MOCK_CASES.filter((c) =>
     c.predictedCodes.every((p) => p.confidence / 100 >= threshold)
   ).length;
-  const reviewCount = MOCK_CASES.length - autoCommitCount;
+  const demoCasesBelowThreshold = MOCK_CASES.length - demoCasesAboveThreshold;
 
   function handleToggleActive(userId: string) {
     setUsers((prev) =>
@@ -88,6 +126,9 @@ export default function Admin({ auth, onSignOut, onNavigate, addToast }: Props) 
         <main className="flex-1 p-6 overflow-auto space-y-6">
           {/* User Management */}
           <section className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div className="border-b border-amber-200 bg-amber-50 px-5 py-3 text-xs text-amber-900" role="status">
+              Demo user directory: add, edit, and deactivate actions are local to this browser and do not change sign-in access.
+            </div>
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
               <div>
                 <h2 className="text-sm font-semibold text-slate-900">User Management</h2>
@@ -179,7 +220,7 @@ export default function Admin({ auth, onSignOut, onNavigate, addToast }: Props) 
             <section className="bg-white rounded-xl border border-slate-200 p-5">
               <h2 className="text-sm font-semibold text-slate-900 mb-1">Confidence Threshold</h2>
               <p className="text-xs text-slate-400 mb-5">
-                Cases where all codes exceed this threshold auto-commit without coder review.
+                This threshold is used by the backend verifier. The counts below use illustrative demo cases only.
               </p>
               <div className="mb-6">
                 <div className="flex items-center justify-between mb-2">
@@ -200,32 +241,42 @@ export default function Admin({ auth, onSignOut, onNavigate, addToast }: Props) 
                   onChange={(e) => setThreshold(Number(e.target.value))}
                   className="w-full accent-primary"
                   aria-label="Confidence threshold"
+                  disabled={!settings || settingsLoading || settingsSaving}
                 />
                 <div className="flex justify-between text-xs text-slate-400 mt-1">
                   <span>0%</span>
                   <span>50%</span>
                   <span>100%</span>
                 </div>
+                <button
+                  type="button"
+                  onClick={handleSaveThreshold}
+                  disabled={!settings || settingsLoading || settingsSaving || threshold === settings?.auto_accept_threshold}
+                  className="mt-4 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                >
+                  {settingsLoading ? "Loading settings…" : settingsSaving ? "Saving…" : "Save threshold"}
+                </button>
+                {settingsError && <p className="mt-2 text-sm text-red-700" role="alert">{settingsError}</p>}
               </div>
 
               {/* Live preview */}
               <div className="rounded-lg border border-slate-200 overflow-hidden">
                 <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200">
-                  <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Live Preview — Today's Cases</p>
+                  <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Illustrative Demo Cases — Preview Only</p>
                 </div>
                 <div className="grid grid-cols-2 divide-x divide-slate-200">
                   <div className="p-4 text-center">
-                    <p className="text-2xl font-bold text-success tabular-nums">{autoCommitCount}</p>
-                    <p className="text-xs text-slate-500 mt-1">Auto-commit</p>
+                    <p className="text-2xl font-bold text-success tabular-nums">{demoCasesAboveThreshold}</p>
+                    <p className="text-xs text-slate-500 mt-1">Every sample score meets threshold</p>
                     <p className="text-xs text-slate-400">
-                      {MOCK_CASES.length > 0 ? Math.round((autoCommitCount / MOCK_CASES.length) * 100) : 0}% of cases
+                      {MOCK_CASES.length > 0 ? Math.round((demoCasesAboveThreshold / MOCK_CASES.length) * 100) : 0}% of demo cases
                     </p>
                   </div>
                   <div className="p-4 text-center">
-                    <p className="text-2xl font-bold text-warning tabular-nums">{reviewCount}</p>
-                    <p className="text-xs text-slate-500 mt-1">Go to review</p>
+                    <p className="text-2xl font-bold text-warning tabular-nums">{demoCasesBelowThreshold}</p>
+                    <p className="text-xs text-slate-500 mt-1">Some sample scores below threshold</p>
                     <p className="text-xs text-slate-400">
-                      {MOCK_CASES.length > 0 ? Math.round((reviewCount / MOCK_CASES.length) * 100) : 0}% of cases
+                      {MOCK_CASES.length > 0 ? Math.round((demoCasesBelowThreshold / MOCK_CASES.length) * 100) : 0}% of demo cases
                     </p>
                   </div>
                 </div>
@@ -237,12 +288,11 @@ export default function Admin({ auth, onSignOut, onNavigate, addToast }: Props) 
               <h2 className="text-sm font-semibold text-slate-900 mb-4">System Health</h2>
               <div className="space-y-3">
                 {[
-                  { label: "BioBERT Model Version", value: "v2.1.3", color: "#16A34A" },
-                  { label: "ICD-10-CM Ontology", value: "2024.2 (FY2025)", color: "#16A34A" },
-                  { label: "Last Model Update", value: "1 Sep 2026", color: undefined },
-                  { label: "Avg. Inference Latency", value: "124 ms", color: "#16A34A" },
-                  { label: "Cases Processed Today", value: "47", color: undefined },
-                  { label: "Queue Depth", value: "3 pending", color: "#EA580C" },
+                  { label: "Classifier checkpoint", value: "Not configured", color: "#EA580C" },
+                  { label: "Active prediction path", value: "Rule-based demo", color: "#EA580C" },
+                  { label: "ICD list", value: "Illustrative sample", color: "#EA580C" },
+                  { label: "Classifier inference", value: "Unavailable", color: "#EA580C" },
+                  { label: "Case and audit storage", value: "SQLite local database", color: undefined },
                 ].map((item) => (
                   <div key={item.label} className="flex items-center justify-between py-2 border-b border-slate-100 last:border-0">
                     <span className="text-xs text-slate-500">{item.label}</span>
@@ -256,14 +306,14 @@ export default function Admin({ auth, onSignOut, onNavigate, addToast }: Props) 
                 ))}
               </div>
 
-              <div className="mt-4 rounded-lg p-3 flex items-center gap-2.5" style={{ background: "#f0fdf4" }}>
+              <div className="mt-4 rounded-lg p-3 flex items-center gap-2.5" style={{ background: "#fff7ed" }}>
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <circle cx="8" cy="8" r="7" fill="#16A34A" />
+                  <circle cx="8" cy="8" r="7" fill="#EA580C" />
                   <path d="M5 8l2.5 2.5L11 5.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
                 <div>
-                  <p className="text-xs font-semibold text-success">All systems operational</p>
-                  <p className="text-xs text-slate-400">Last health check: 2 minutes ago</p>
+                  <p className="text-xs font-semibold text-warning">Demo configuration; classifier unavailable</p>
+                  <p className="text-xs text-slate-400">Values describe the current demo configuration.</p>
                 </div>
               </div>
             </section>

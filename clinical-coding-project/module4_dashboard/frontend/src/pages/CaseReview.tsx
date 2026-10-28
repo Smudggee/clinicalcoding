@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import type { AuthState, CaseItem, PredictedCode } from "../types";
-import { apiGetCase, apiConfirmCode, apiOverrideCode, apiSubmitCase } from "../api";
+import { apiGetCase, apiConfirmCode, apiRejectCode, apiOverrideCode, apiSubmitCase } from "../api";
 import { VerificationBadge } from "../components/StatusBadge";
 import ConfidenceBar from "../components/ConfidenceBar";
 import { CardSkeleton } from "../components/Skeleton";
@@ -30,8 +30,12 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
   const [caseData, setCaseData] = useState<CaseItem | null>(null);
   const [codes, setCodes] = useState<PredictedCode[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [hoveredCodeId, setHoveredCodeId] = useState<string | null>(null);
   const [overrideModal, setOverrideModal] = useState<{ code: PredictedCode } | null>(null);
+  const [rejectModal, setRejectModal] = useState<PredictedCode | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const [rejectLoading, setRejectLoading] = useState(false);
   const [overrideNewCode, setOverrideNewCode] = useState("");
   const [overrideReason, setOverrideReason] = useState(OVERRIDE_REASONS[0]);
   const [overrideLoading, setOverrideLoading] = useState(false);
@@ -45,8 +49,11 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
       const c = await apiGetCase(caseId);
       setCaseData(c);
       setCodes(c.predictedCodes.map((p) => ({ ...p })));
-    } catch {
-      addToast("error", "Failed to load case. Please try again.");
+      setLoadError(null);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to load case.";
+      setLoadError(message);
+      addToast("error", message);
     } finally {
       setLoading(false);
     }
@@ -105,6 +112,24 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
     }
   }
 
+  async function handleRejectSubmit() {
+    if (!rejectModal || !rejectReason.trim()) return;
+    setRejectLoading(true);
+    try {
+      await apiRejectCode(caseId, rejectModal.id, rejectReason.trim(), auth.user.name);
+      setCodes((prev) => prev.map((c) => c.id === rejectModal.id
+        ? { ...c, userAction: "rejected", userReason: rejectReason.trim() }
+        : c));
+      addToast("success", `Code ${rejectModal.code} rejected and recorded.`);
+      setRejectModal(null);
+      setRejectReason("");
+    } catch (e) {
+      addToast("error", e instanceof Error ? e.message : "Could not reject code.");
+    } finally {
+      setRejectLoading(false);
+    }
+  }
+
   async function handleSubmitToBilling() {
     setSubmitLoading(true);
     try {
@@ -123,6 +148,7 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
   const allActioned = codes.every((c) => c.userAction);
   const confirmedCount = codes.filter((c) => c.userAction === "confirmed").length;
   const overriddenCount = codes.filter((c) => c.userAction === "overridden").length;
+  const rejectedCount = codes.filter((c) => c.userAction === "rejected").length;
   const pendingCount = codes.filter((c) => !c.userAction).length;
   const weights = wordWeights();
 
@@ -170,8 +196,15 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
           )}
         </div>
 
+        {caseData && (
+          <div className={`px-6 py-2 text-sm ${caseData.dataSource === "mock" ? "bg-amber-50 text-amber-900" : "bg-blue-50 text-blue-900"}`} role="status">
+            {caseData.analysisSourceLabel ?? (caseData.dataSource === "mock" ? "Mock demo case; codes are illustrative only" : "Analysis source not specified")}
+          </div>
+        )}
+        {loadError && <div className="mx-6 mt-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">{loadError}</div>}
+
         <div className="flex flex-1 overflow-hidden">
-          {/* Left: Discharge text with attention heatmap */}
+          {/* Left: Discharge text with keyword-match highlighting */}
           <div
             className="flex flex-col border-r border-slate-200 bg-white"
             style={{ width: "40%", minWidth: 380 }}
@@ -181,8 +214,8 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
                 <h2 className="text-sm font-semibold text-slate-900">Discharge Summary</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
                   {hoveredCodeId
-                    ? "Attention heatmap active — hover words show model focus"
-                    : "Hover a code card to activate attention heatmap"}
+                    ? "Keyword-match highlights active"
+                    : "Hover a code card to show keyword matches"}
                 </p>
               </div>
               {hoveredCodeId && (
@@ -214,7 +247,7 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
                               : "transparent",
                           fontWeight: w > 0.7 ? 600 : 400,
                         }}
-                        title={w > 0.05 ? `Attention weight: ${(w * 100).toFixed(0)}%` : undefined}
+                        title={w > 0.05 ? `Keyword-match weight: ${(w * 100).toFixed(0)}%` : undefined}
                       >
                         {word}{" "}
                       </span>
@@ -226,7 +259,7 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
 
             {/* Heatmap legend */}
             <div className="px-5 py-3 border-t border-slate-100 flex items-center gap-3 flex-shrink-0">
-              <span className="text-xs text-slate-400">Attention weight:</span>
+              <span className="text-xs text-slate-400">Keyword-match weight:</span>
               <div className="flex items-center gap-1.5">
                 <div className="flex gap-0.5">
                   {[0.05, 0.15, 0.25, 0.35, 0.45].map((op, i) => (
@@ -264,6 +297,8 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
                       ? "#16A34A"
                       : code.userAction === "overridden"
                       ? "#EA580C"
+                      : code.userAction === "rejected"
+                      ? "#DC2626"
                       : undefined;
 
                   return (
@@ -271,7 +306,7 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
                       key={code.id}
                       className="bg-white rounded-xl border transition-all"
                       style={{
-                        borderColor: isHovered ? "#2563EB" : code.userAction === "confirmed" ? "#bbf7d0" : code.userAction === "overridden" ? "#fed7aa" : "#e2e8f0",
+                        borderColor: isHovered ? "#2563EB" : code.userAction === "confirmed" ? "#bbf7d0" : code.userAction === "overridden" ? "#fed7aa" : code.userAction === "rejected" ? "#fecaca" : "#e2e8f0",
                         boxShadow: isHovered ? "0 0 0 3px rgba(37,99,235,0.1)" : "none",
                       }}
                       onMouseEnter={() => setHoveredCodeId(code.id)}
@@ -295,14 +330,19 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
                               <VerificationBadge status={code.verificationStatus} />
                             </div>
                             <p className="text-sm text-slate-600 leading-snug">{code.description}</p>
+                            {code.rejectReason && (
+                              <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900" role="status">
+                                <span className="font-semibold">Verification reason:</span> {code.rejectReason}
+                              </p>
+                            )}
                           </div>
 
                           {code.userAction && (
                             <div
                               className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold flex-shrink-0"
                               style={{
-                                background: code.userAction === "confirmed" ? "#dcfce7" : "#ffedd5",
-                                color: code.userAction === "confirmed" ? "#16A34A" : "#EA580C",
+                                background: code.userAction === "confirmed" ? "#dcfce7" : code.userAction === "rejected" ? "#fee2e2" : "#ffedd5",
+                                color: code.userAction === "confirmed" ? "#16A34A" : code.userAction === "rejected" ? "#DC2626" : "#EA580C",
                               }}
                             >
                               {code.userAction === "confirmed" ? (
@@ -312,13 +352,15 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
                                   </svg>
                                   Confirmed
                                 </>
-                              ) : (
+                              ) : code.userAction === "overridden" ? (
                                 <>
                                   <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                                     <path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                                   </svg>
                                   Overridden
                                 </>
+                              ) : (
+                                <>Rejected</>
                               )}
                             </div>
                           )}
@@ -364,6 +406,11 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
                             Override reason: <span className="font-medium">{code.overrideReason}</span>
                           </div>
                         )}
+                        {code.userAction === "rejected" && code.userReason && (
+                          <div className="mb-3 rounded-lg px-3 py-2 text-xs text-red-800" style={{ background: "#fef2f2" }}>
+                            Rejection reason: <span className="font-medium">{code.userReason}</span>
+                          </div>
+                        )}
 
                         {/* Actions */}
                         {!code.userAction && !caseData?.submittedToBilling && (
@@ -384,6 +431,13 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
                             >
                               Override
                             </button>
+                            <button
+                              onClick={() => { setRejectModal(code); setRejectReason(""); }}
+                              className="flex-1 rounded-lg border border-red-300 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+                              aria-label={`Reject code ${code.code}`}
+                            >
+                              Reject
+                            </button>
                           </div>
                         )}
                       </div>
@@ -402,30 +456,53 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
                 {overriddenCount > 0 && (
                   <> · <span className="font-medium text-warning">{overriddenCount} overridden</span></>
                 )}
+                {rejectedCount > 0 && (
+                  <> · <span className="font-medium text-danger">{rejectedCount} rejected</span></>
+                )}
                 {pendingCount > 0 && (
                   <> · <span className="text-slate-400">{pendingCount} pending</span></>
                 )}
               </div>
               <button
                 onClick={() => setConfirmSubmitOpen(true)}
-                disabled={!allActioned || !!caseData?.submittedToBilling}
+                disabled={!allActioned || confirmedCount + overriddenCount === 0 || !!caseData?.submittedToBilling}
                 className="px-5 py-2.5 rounded-lg text-sm font-semibold text-white transition-all focus:outline-none focus:ring-2 focus:ring-blue-300"
                 style={{
-                  background: allActioned && !caseData?.submittedToBilling ? "#2563EB" : "#cbd5e1",
-                  cursor: allActioned && !caseData?.submittedToBilling ? "pointer" : "not-allowed",
+                  background: allActioned && confirmedCount + overriddenCount > 0 && !caseData?.submittedToBilling ? "#2563EB" : "#cbd5e1",
+                  cursor: allActioned && confirmedCount + overriddenCount > 0 && !caseData?.submittedToBilling ? "pointer" : "not-allowed",
                 }}
-                aria-disabled={!allActioned || !!caseData?.submittedToBilling}
+                aria-disabled={!allActioned || confirmedCount + overriddenCount === 0 || !!caseData?.submittedToBilling}
               >
                 {caseData?.submittedToBilling
                   ? "✓ Submitted to Billing"
+                  : allActioned && confirmedCount + overriddenCount > 0
+                  ? "Submit Reviewed Codes to Billing"
                   : allActioned
-                  ? "Submit All Confirmed Codes to Billing"
+                  ? "No accepted codes to submit"
                   : `Submit to Billing (${pendingCount} pending)`}
               </button>
             </div>
           </div>
         </div>
       </div>
+
+      {rejectModal && (
+        <Modal
+          title={`Reject Code: ${rejectModal.code}`}
+          onClose={() => { setRejectModal(null); setRejectReason(""); }}
+          footer={
+            <>
+              <button onClick={() => { setRejectModal(null); setRejectReason(""); }} className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-600">Cancel</button>
+              <button onClick={handleRejectSubmit} disabled={rejectLoading || !rejectReason.trim()} className="rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" style={{ background: "#DC2626" }}>
+                {rejectLoading ? "Saving…" : "Reject Code"}
+              </button>
+            </>
+          }
+        >
+          <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="rejection-reason">Reason for rejection</label>
+          <textarea id="rejection-reason" value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} rows={3} className="w-full rounded-lg border border-slate-300 p-3 text-sm" placeholder="Explain why this predicted code should be rejected" />
+        </Modal>
+      )}
 
       {/* Override Modal */}
       {overrideModal && (

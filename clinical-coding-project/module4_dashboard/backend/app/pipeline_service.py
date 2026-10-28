@@ -1,9 +1,9 @@
 """
-Pipeline Service bridging Modules 1, 2, and 3 for the HITL Dashboard (Module 4).
+Rule-based demo pipeline bridging Modules 1 and 3 for the HITL Dashboard.
 
 Executes:
 1. Module 1: Text normalization and sliding-window chunking (512 token window, 256 stride).
-2. Module 2: Multi-label ICD prediction with evidence localization and window aggregation (Eq. 1).
+2. Demo candidate generation using ICD10_KNOWLEDGE_BASE keyword matching (not Module 2 inference).
 3. Module 3: Neuro-symbolic verification (syntactic regex, release check, NegEx negation detector,
              historical condition routing, confidence thresholding).
 4. Attention span computation matching the frontend word-level heatmap requirements.
@@ -11,7 +11,8 @@ Executes:
 import os
 import re
 import sys
-from typing import List, Dict, Any, Optional
+from datetime import datetime, timezone
+from typing import List, Dict, Any, Callable, Optional
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -20,6 +21,8 @@ if PROJECT_ROOT not in sys.path:
 
 from module1_ingestion.preprocessing import normalize, split_sections
 from module1_ingestion.sliding_window import SlidingWindowChunker, aggregate_max
+from module1_ingestion.schemas import IngestedDocument
+from module2_classifier.schemas import ClassifiedDocument
 from module3_verification.verifier import NeuroSymbolicVerifier
 from module3_verification.icd_ontology import ICDOntology
 from module3_verification.negation_detector import classify_evidence
@@ -120,8 +123,15 @@ def tokenize_words(text: str) -> List[str]:
 
 
 class ClinicalCodingPipeline:
-    def __init__(self, review_threshold: float = 0.50, auto_accept_threshold: float = 0.85):
+    def __init__(self, review_threshold: float = 0.50, auto_accept_threshold: float = 0.85,
+                 candidate_provider: Optional[Callable[[IngestedDocument], ClassifiedDocument]] = None,
+                 classifier_checkpoint_path: Optional[str] = None,
+                 inference_engine_factory: Optional[Callable[..., Any]] = None,
+                 enable_classifier: bool = True):
         self.chunker = SlidingWindowChunker(window_size=512, stride=256)
+        self.candidate_provider = candidate_provider
+        self.classifier_status = "provider_configured" if candidate_provider else "not_configured"
+        self.classifier_source_label = "Module 2 classifier provider output; model/checkpoint determined by provider"
         self.ontology = ICDOntology()
         self.review_threshold = review_threshold
         self.auto_accept_threshold = auto_accept_threshold
@@ -132,14 +142,24 @@ class ClinicalCodingPipeline:
         )
 
         self.inference_engine = None
-        checkpoint_path = os.path.join(PROJECT_ROOT, "module2_classifier", "checkpoints", "best_model.pt")
-        if os.path.exists(checkpoint_path):
+        self.classifier_initialization_error = None
+        checkpoint_path = classifier_checkpoint_path or os.environ.get(
+            "ACCS_CLASSIFIER_CHECKPOINT",
+            os.path.join(PROJECT_ROOT, "module2_classifier", "checkpoints", "best_model.pt"),
+        )
+        if enable_classifier and self.candidate_provider is None and os.path.isfile(checkpoint_path):
             try:
-                from module2_classifier.inference import ClinicalInferenceEngine
-                self.inference_engine = ClinicalInferenceEngine(checkpoint_path=checkpoint_path)
-                print(f"[Pipeline] Successfully connected Person 2 Bio_ClinicalBERT model from {checkpoint_path}")
+                if inference_engine_factory is None:
+                    from module2_classifier.inference import ClinicalInferenceEngine
+                    inference_engine_factory = ClinicalInferenceEngine
+                self.inference_engine = inference_engine_factory(checkpoint_path=checkpoint_path)
+                self.classifier_status = "ready"
+                encoder_name = getattr(getattr(self.inference_engine, "model", None), "model_name", "configured encoder")
+                self.classifier_source_label = f"Module 2 trained checkpoint inference ({encoder_name}; threshold=0.30)"
             except Exception as e:
-                print(f"[Pipeline] Note: Using fallback candidate matcher ({e})")
+                self.classifier_initialization_error = str(e)
+                self.classifier_status = "load_failed"
+                print(f"[Pipeline] Classifier checkpoint is present but could not be loaded: {e}")
 
     def update_thresholds(self, review_threshold: float, auto_accept_threshold: float):
         self.review_threshold = review_threshold
@@ -149,84 +169,63 @@ class ClinicalCodingPipeline:
 
     def analyze_document(self, document_id: str, raw_text: str, patient_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Executes the full 4-pillar pipeline:
-        Module 1 -> Module 2 -> Module 3 -> Word-level attention heatmap synthesis.
+        Executes ingestion -> rule-based demo candidate matching -> verification.
+        Candidate confidence values are hand-authored demo scores, not model outputs.
         """
         normalized_text = normalize(raw_text)
         ingested = self.chunker.chunk(document_id=document_id, text=normalized_text)
         words = tokenize_words(normalized_text)
+        candidate_provider = getattr(self, "candidate_provider", None)
+        inference_engine = getattr(self, "inference_engine", None)
+        classifier_initialization_error = getattr(self, "classifier_initialization_error", None)
 
-        # 1. Module 2 candidate extraction (Transformer Model with fallback)
-        candidate_predictions = []
-        if self.inference_engine is not None:
-            try:
-                clf_doc = self.inference_engine.predict(normalized_text, document_id=document_id, threshold=0.15)
-                for p in clf_doc.predictions:
-                    info = ICD10_KNOWLEDGE_BASE.get(p.code, {
-                        "description": f"Diagnosis ({p.code})",
-                        "primary_terms": [p.code.lower()],
-                        "supporting_terms": [],
-                        "base_confidence": p.probability,
-                    })
-                    candidate_predictions.append({
-                        "code": p.code,
-                        "description": info["description"],
-                        "probability": round(float(p.probability), 3),
-                        "evidence_span": p.evidence_span,
-                        "evidence_start_char": p.evidence_start_char,
-                        "supporting_terms": info.get("supporting_terms", []),
-                        "primary_terms": info.get("primary_terms", [p.code.lower()]),
-                    })
-            except Exception as e:
-                print(f"[Pipeline] Transformer inference notice: {e}, using rule fallback.")
+        # Prefer an explicitly supplied Module 2 provider, then a configured
+        # checkpoint. Use keyword matching only when no classifier is available.
+        if candidate_provider is not None:
+            classified = candidate_provider(ingested)
+            analysis_source_label = getattr(
+                self,
+                "classifier_source_label",
+                "Module 2 classifier provider output; model/checkpoint determined by provider",
+            )
+        elif inference_engine is not None:
+            classified = inference_engine.predict(
+                text_or_windows=ingested.windows,
+                document_id=document_id,
+                threshold=0.30,
+                full_text=normalized_text,
+            )
+            analysis_source_label = getattr(
+                self,
+                "classifier_source_label",
+                "Module 2 classifier checkpoint inference",
+            )
+        elif classifier_initialization_error is not None:
+            raise RuntimeError(
+                "Classifier checkpoint was found but could not be loaded: "
+                f"{classifier_initialization_error}"
+            )
+        else:
+            candidate_predictions = self._generate_rule_based_candidates(normalized_text, ingested)
+            analysis_source = "rule_based_demo"
+            analysis_source_label = "Rule-based demo predictions (keyword matching; not BioClinicalBERT)"
 
-        # Fallback to dictionary pattern matching if no model predictions
-        if not candidate_predictions:
-            for code, info in ICD10_KNOWLEDGE_BASE.items():
-                match_found = False
-                best_evidence = ""
-                best_start_char = -1
-                confidence_boost = 0.0
-
-                # Find matching primary term
-                for term in info["primary_terms"]:
-                    pattern = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
-                    match = pattern.search(normalized_text)
-                    if match:
-                        match_found = True
-                        best_start_char = match.start()
-                        # Context window of 100 chars around the match
-                        span_start = max(0, best_start_char - 40)
-                        span_end = min(len(normalized_text), match.end() + 60)
-                        best_evidence = normalized_text[span_start:span_end].replace("\n", " ").strip()
-                        break
-
-                if match_found:
-                    # Calculate window-level presence and aggregation
-                    window_scores = []
-                    for w_idx, win in enumerate(ingested.windows):
-                        win_score = 0.0
-                        if any(re.search(rf"\b{re.escape(t)}\b", win.text, re.IGNORECASE) for t in info["primary_terms"]):
-                            win_score = info["base_confidence"]
-                            # Count supporting terms in this window
-                            sup_hits = sum(1 for st in info["supporting_terms"] if re.search(rf"\b{re.escape(st)}\b", win.text, re.IGNORECASE))
-                            win_score = min(0.98, win_score + sup_hits * 0.02)
-                        window_scores.append(win_score)
-
-                    # Aggregation Eq. 1: p(c|D) = max_k p_k(c)
-                    doc_probability = aggregate_max(window_scores) if window_scores else info["base_confidence"]
-                    if doc_probability == 0.0:
-                        doc_probability = info["base_confidence"]
-
-                    candidate_predictions.append({
-                        "code": code,
-                        "description": info["description"],
-                        "probability": round(doc_probability, 3),
-                        "evidence_span": best_evidence,
-                        "evidence_start_char": best_start_char,
-                        "supporting_terms": info["supporting_terms"],
-                        "primary_terms": info["primary_terms"],
-                    })
+        if candidate_provider is not None or inference_engine is not None:
+            if classified.document_id != document_id:
+                raise ValueError("Classifier returned predictions for a different document.")
+            candidate_predictions = [
+                {
+                    "code": pred.code,
+                    "description": ICD10_KNOWLEDGE_BASE.get(pred.code, {}).get("description", pred.code),
+                    "probability": pred.probability,
+                    "evidence_span": pred.evidence_span,
+                    "evidence_start_char": pred.evidence_start_char,
+                    "supporting_terms": [],
+                    "primary_terms": [],
+                }
+                for pred in classified.predictions
+            ]
+            analysis_source = "module2_classifier"
 
         # 2. Module 3 Neuro-symbolic verification
         predicted_codes = []
@@ -274,8 +273,10 @@ class ClinicalCodingPipeline:
 
         return {
             "id": document_id,
+            "analysisSource": analysis_source,
+            "analysisSourceLabel": analysis_source_label,
             "patientId": patient_id or f"P-{abs(hash(document_id)) % 9000 + 1000}",
-            "submittedAt": "2026-09-24T21:45:00Z",
+            "submittedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "status": "Pending Review" if any(c["verificationStatus"] != "VERIFIED" for c in predicted_codes) else "Completed",
             "averageConfidence": avg_conf,
             "dischargeText": normalized_text,
@@ -283,6 +284,55 @@ class ClinicalCodingPipeline:
             "predictedCodes": predicted_codes,
             "submittedToBilling": False,
         }
+
+    @staticmethod
+    def _generate_rule_based_candidates(normalized_text: str, ingested: IngestedDocument) -> List[Dict[str, Any]]:
+        """Generate illustrative candidates from the local keyword table; not model inference."""
+        candidate_predictions = []
+        for code, info in ICD10_KNOWLEDGE_BASE.items():
+            match_found = False
+            best_evidence = ""
+            best_start_char = -1
+
+            for term in info["primary_terms"]:
+                pattern = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+                match = pattern.search(normalized_text)
+                if match:
+                    match_found = True
+                    best_start_char = match.start()
+                    span_start = max(0, best_start_char - 40)
+                    span_end = min(len(normalized_text), match.end() + 60)
+                    best_evidence = normalized_text[span_start:span_end].replace("\n", " ").strip()
+                    break
+
+            if not match_found:
+                continue
+
+            window_scores = []
+            for win in ingested.windows:
+                win_score = 0.0
+                if any(re.search(rf"\b{re.escape(term)}\b", win.text, re.IGNORECASE) for term in info["primary_terms"]):
+                    win_score = info["base_confidence"]
+                    sup_hits = sum(
+                        1 for term in info["supporting_terms"]
+                        if re.search(rf"\b{re.escape(term)}\b", win.text, re.IGNORECASE)
+                    )
+                    win_score = min(0.98, win_score + sup_hits * 0.02)
+                window_scores.append(win_score)
+
+            probability = aggregate_max(window_scores) if window_scores else info["base_confidence"]
+            if probability == 0.0:
+                probability = info["base_confidence"]
+            candidate_predictions.append({
+                "code": code,
+                "description": info["description"],
+                "probability": round(probability, 3),
+                "evidence_span": best_evidence,
+                "evidence_start_char": best_start_char,
+                "supporting_terms": info["supporting_terms"],
+                "primary_terms": info["primary_terms"],
+            })
+        return candidate_predictions
 
     def _compute_attention_spans(self, words: List[str], primary_terms: List[str],
                                  supporting_terms: List[str], evidence_start_char: int,

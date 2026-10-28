@@ -1,5 +1,5 @@
 import { MOCK_CASES, MOCK_AUDIT } from "./mockData";
-import type { CaseItem, AuditEntry, AuthState, PredictedCode } from "./types";
+import type { CaseItem, AuditEntry, AuthState, PredictedCode, SystemSettings } from "./types";
 
 const API_BASE = "http://localhost:8000";
 let _token: string | null = null;
@@ -17,6 +17,30 @@ function authHeaders() {
     "Content-Type": "application/json",
     Authorization: `Bearer ${_token}`,
   };
+}
+
+async function responseError(res: Response, fallback: string): Promise<Error> {
+  try {
+    const body = await res.json();
+    return new Error(typeof body?.detail === "string" ? body.detail : fallback);
+  } catch {
+    return new Error(fallback);
+  }
+}
+
+function isNetworkFailure(error: unknown): error is Error {
+  return error instanceof Error && ["TypeError", "AbortError", "TimeoutError"].includes(error.name);
+}
+
+function canUseLocalDemoFallback(caseId: string, error: unknown): boolean {
+  return isNetworkFailure(error) && casesState.find((c) => c.id === caseId)?.dataSource === "mock";
+}
+
+function actionFailure(action: string, error: unknown): Error {
+  if (isNetworkFailure(error)) {
+    return new Error(`${action} could not reach the backend. No changes were saved.`);
+  }
+  return error instanceof Error ? error : new Error(`${action} failed.`);
 }
 
 // --- Health / Backend Status ---
@@ -87,7 +111,7 @@ export async function apiGetCases(status?: string): Promise<CaseItem[]> {
     const url = status ? `${API_BASE}/api/cases?status=${encodeURIComponent(status)}` : `${API_BASE}/api/cases`;
     const res = await fetch(url, { headers: authHeaders(), signal: AbortSignal.timeout(2500) });
     if (res.ok) {
-      const liveCases: CaseItem[] = await res.json();
+      const liveCases: CaseItem[] = (await res.json()).map((c: CaseItem) => ({ ...c, dataSource: "backend" as const }));
       casesState = liveCases;
       return liveCases;
     }
@@ -97,8 +121,8 @@ export async function apiGetCases(status?: string): Promise<CaseItem[]> {
 
   await delay(200);
   if (!_token) throw new Error("Unauthorized");
-  if (status) return casesState.filter((c) => c.status === status);
-  return casesState;
+  if (status) return casesState.filter((c) => c.status === status).map((c) => ({ ...c, dataSource: "mock" as const }));
+  return casesState.map((c) => ({ ...c, dataSource: "mock" as const }));
 }
 
 export async function apiGetCase(caseId: string): Promise<CaseItem> {
@@ -108,7 +132,7 @@ export async function apiGetCase(caseId: string): Promise<CaseItem> {
       signal: AbortSignal.timeout(2500),
     });
     if (res.ok) {
-      return await res.json();
+      return { ...(await res.json()), dataSource: "backend" };
     }
   } catch (e) {
     console.warn("[API] Failed to fetch live case, using local store:", e);
@@ -118,7 +142,7 @@ export async function apiGetCase(caseId: string): Promise<CaseItem> {
   if (!_token) throw new Error("Unauthorized");
   const c = casesState.find((x) => x.id === caseId);
   if (!c) throw new Error("Case not found");
-  return c;
+  return { ...c, dataSource: "mock" };
 }
 
 export async function apiAnalyzeNote(text: string, patientId?: string, documentId?: string): Promise<CaseItem> {
@@ -130,40 +154,42 @@ export async function apiAnalyzeNote(text: string, patientId?: string, documentI
       signal: AbortSignal.timeout(10000),
     });
     if (res.ok) {
-      const newCase: CaseItem = await res.json();
+      const newCase: CaseItem = { ...(await res.json()), dataSource: "backend" };
       casesState.unshift(newCase);
       return newCase;
     }
+    throw await responseError(res, `Analysis failed (${res.status}).`);
   } catch (e) {
-    console.warn("[API] Live pipeline analysis unavailable, creating local demo case:", e);
+    if (e instanceof Error && e.message.startsWith("Clinical note analysis failed:")) throw e;
+    if (e instanceof Error && e.name !== "TypeError" && e.name !== "AbortError") throw e;
+    throw new Error("Clinical note analysis is unavailable because the backend could not be reached. No predictions were generated.");
   }
+}
 
-  // Fallback demo analysis
-  await delay(600);
-  const words = text.split(/(\s+)/).filter((t) => t.trim().length > 0);
-  const docId = documentId || `CASE-${Date.now().toString().slice(-6)}`;
-  const mockNewCase: CaseItem = {
-    id: docId,
-    patientId: patientId || `P-${Math.floor(1000 + Math.random() * 9000)}`,
-    submittedAt: new Date().toISOString(),
-    status: "Pending Review",
-    averageConfidence: 89,
-    dischargeText: text,
-    words,
-    predictedCodes: [
-      {
-        id: `c-${docId}-1`,
-        code: "A41.9",
-        description: "Sepsis, unspecified organism",
-        confidence: 94,
-        verificationStatus: "VERIFIED",
-        supportingEvidence: text.slice(0, 80),
-        attentionSpans: [{ startIdx: 0, endIdx: Math.min(words.length, 5), weight: 0.9 }],
-      },
-    ],
-  };
-  casesState.unshift(mockNewCase);
-  return mockNewCase;
+export async function apiTranscribeAudio(
+  file: File,
+  language?: "ml" | "en",
+): Promise<{
+  transcript: string;
+  language: string;
+  languageProbability: number;
+  segments: Array<{ start: number; end: number; text: string }>;
+  transcriptionSourceLabel: string;
+}> {
+  const query = language ? `?language=${encodeURIComponent(language)}` : "";
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/transcribe${query}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${_token}`, "X-Audio-Filename": file.name },
+      body: file,
+      signal: AbortSignal.timeout(10 * 60 * 1000),
+    });
+  } catch {
+    throw new Error("Audio transcription is unavailable because the backend could not be reached.");
+  }
+  if (!response.ok) throw await responseError(response, `Audio transcription failed (${response.status}).`);
+  return await response.json();
 }
 
 export async function apiConfirmCode(
@@ -179,8 +205,10 @@ export async function apiConfirmCode(
       signal: AbortSignal.timeout(2500),
     });
     if (res.ok) return;
+    throw await responseError(res, `Could not confirm code (${res.status}).`);
   } catch (e) {
-    console.warn("[API] Live confirm failed, updating local state:", e);
+    if (!canUseLocalDemoFallback(caseId, e)) throw actionFailure("Confirming this code", e);
+    console.warn("[API] Backend unavailable; confirming code in local demo state:", e);
   }
 
   await delay(200);
@@ -201,6 +229,45 @@ export async function apiConfirmCode(
   });
 }
 
+export async function apiRejectCode(
+  caseId: string,
+  codeId: string,
+  reason: string,
+  coderName: string
+): Promise<void> {
+  try {
+    const res = await fetch(`${API_BASE}/api/cases/${encodeURIComponent(caseId)}/codes/${encodeURIComponent(codeId)}/reject`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ reason, coderName }),
+      signal: AbortSignal.timeout(2500),
+    });
+    if (res.ok) return;
+    throw await responseError(res, `Could not reject code (${res.status}).`);
+  } catch (e) {
+    if (!canUseLocalDemoFallback(caseId, e)) throw actionFailure("Rejecting this code", e);
+    console.warn("[API] Backend rejection unavailable; recording the action in local demo state:", e);
+  }
+
+  await delay(200);
+  const c = casesState.find((x) => x.id === caseId);
+  if (!c) throw new Error("Case not found");
+  const code = c.predictedCodes.find((p) => p.id === codeId);
+  if (!code) throw new Error("Code not found");
+  code.userAction = "rejected";
+  code.userReason = reason;
+  auditState.unshift({
+    id: `AUD-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    coderName,
+    caseId,
+    action: "Rejected",
+    codeAffected: code.code,
+    oldValue: "Pending review",
+    newValue: reason,
+  });
+}
+
 export async function apiOverrideCode(
   caseId: string,
   codeId: string,
@@ -216,8 +283,10 @@ export async function apiOverrideCode(
       signal: AbortSignal.timeout(2500),
     });
     if (res.ok) return;
+    throw await responseError(res, `Could not override code (${res.status}).`);
   } catch (e) {
-    console.warn("[API] Live override failed, updating local state:", e);
+    if (!canUseLocalDemoFallback(caseId, e)) throw actionFailure("Overriding this code", e);
+    console.warn("[API] Backend unavailable; overriding code in local demo state:", e);
   }
 
   await delay(200);
@@ -250,8 +319,10 @@ export async function apiSubmitCase(caseId: string, coderName: string): Promise<
       signal: AbortSignal.timeout(2500),
     });
     if (res.ok) return;
+    throw await responseError(res, `Could not submit case (${res.status}).`);
   } catch (e) {
-    console.warn("[API] Live submit failed, updating local state:", e);
+    if (!canUseLocalDemoFallback(caseId, e)) throw actionFailure("Submitting this case", e);
+    console.warn("[API] Backend unavailable; submitting case in local demo state:", e);
   }
 
   await delay(300);
@@ -290,7 +361,7 @@ export async function apiGetAudit(params?: {
     if (res.ok) {
       const data: AuditEntry[] = await res.json();
       auditState = data;
-      return data;
+      return data.map((entry) => ({ ...entry, dataSource: "backend" }));
     }
   } catch (e) {
     console.warn("[API] Live audit log unavailable, using local store:", e);
@@ -301,35 +372,26 @@ export async function apiGetAudit(params?: {
   if (params?.caseId) results = results.filter((a) => a.caseId === params.caseId);
   if (params?.from) results = results.filter((a) => a.timestamp >= params.from!);
   if (params?.to) results = results.filter((a) => a.timestamp <= params.to! + "T23:59:59Z");
-  return results;
+  return results.map((entry) => ({ ...entry, dataSource: "mock" }));
 }
 
 // --- Admin Settings ---
-export async function apiGetSettings(): Promise<any> {
-  try {
-    const res = await fetch(`${API_BASE}/api/admin/settings`, { headers: authHeaders() });
-    if (res.ok) return await res.json();
-  } catch {
-    // fallback
-  }
-  return {
-    auto_accept_threshold: 0.85,
-    review_threshold: 0.50,
-    model_name: "emilyalsentzer/Bio_ClinicalBERT",
-    ontology_version: "ICD-10-CM 2026",
-    sliding_window_size: 512,
-    sliding_stride: 256,
-  };
+export async function apiGetSettings(): Promise<SystemSettings> {
+  const res = await fetch(`${API_BASE}/api/admin/settings`, {
+    headers: authHeaders(),
+    signal: AbortSignal.timeout(2500),
+  });
+  if (!res.ok) throw await responseError(res, `Could not load settings (${res.status}).`);
+  return await res.json();
 }
 
-export async function apiUpdateSettings(settings: any): Promise<void> {
-  try {
-    await fetch(`${API_BASE}/api/admin/settings`, {
-      method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify(settings),
-    });
-  } catch {
-    // fallback
-  }
+export async function apiUpdateSettings(settings: SystemSettings): Promise<SystemSettings> {
+  const res = await fetch(`${API_BASE}/api/admin/settings`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(settings),
+    signal: AbortSignal.timeout(2500),
+  });
+  if (!res.ok) throw await responseError(res, `Could not save settings (${res.status}).`);
+  return await res.json();
 }

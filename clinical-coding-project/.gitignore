@@ -9,7 +9,10 @@ build/
 *.ckpt
 *.pt
 data/mimic/
+data/accs_dashboard.sqlite3
 .pytest_cache/
+tests/.test_runtime/
+
 # Temporary audio files
 evaluation/temp_wav/
 
