@@ -136,6 +136,21 @@ class ClinicalCodingPipeline:
             auto_accept_threshold=auto_accept_threshold,
         )
 
+        self.inference_engine = None
+        self.classifier_initialization_error = None
+        checkpoint_path = os.environ.get(
+            "ACCS_CLASSIFIER_CHECKPOINT",
+            os.path.join(PROJECT_ROOT, "module2_classifier", "checkpoints", "best_model.pt"),
+        )
+        if self.candidate_provider is None and os.path.exists(checkpoint_path):
+            try:
+                from module2_classifier.inference import ClinicalInferenceEngine
+                self.inference_engine = ClinicalInferenceEngine(checkpoint_path=checkpoint_path)
+                print(f"[Pipeline] Loaded Module 2 classifier from {checkpoint_path}")
+            except Exception as e:
+                self.classifier_initialization_error = str(e)
+                print(f"[Pipeline] Classifier checkpoint is present but could not be loaded: {e}")
+
     def update_thresholds(self, review_threshold: float, auto_accept_threshold: float):
         self.review_threshold = review_threshold
         self.auto_accept_threshold = auto_accept_threshold
@@ -150,15 +165,34 @@ class ClinicalCodingPipeline:
         normalized_text = normalize(raw_text)
         ingested = self.chunker.chunk(document_id=document_id, text=normalized_text)
         words = tokenize_words(normalized_text)
+        candidate_provider = getattr(self, "candidate_provider", None)
+        inference_engine = getattr(self, "inference_engine", None)
+        classifier_initialization_error = getattr(self, "classifier_initialization_error", None)
 
-        # Use Module 2's existing document contract when a real provider is supplied.
-        # The default remains a clearly identified rule-based demonstration path.
-        if self.candidate_provider is None:
+        # Prefer an explicitly supplied Module 2 provider, then a configured
+        # checkpoint. Use keyword matching only when no classifier is available.
+        if candidate_provider is not None:
+            classified = candidate_provider(ingested)
+            analysis_source_label = "Module 2 classifier provider output; model/checkpoint determined by provider"
+        elif inference_engine is not None:
+            classified = inference_engine.predict(
+                text_or_windows=ingested.windows,
+                document_id=document_id,
+                threshold=0.15,
+                full_text=normalized_text,
+            )
+            analysis_source_label = "Module 2 classifier checkpoint inference"
+        elif classifier_initialization_error is not None:
+            raise RuntimeError(
+                "Classifier checkpoint was found but could not be loaded: "
+                f"{classifier_initialization_error}"
+            )
+        else:
             candidate_predictions = self._generate_rule_based_candidates(normalized_text, ingested)
             analysis_source = "rule_based_demo"
             analysis_source_label = "Rule-based demo predictions (keyword matching; not BioClinicalBERT)"
-        else:
-            classified = self.candidate_provider(ingested)
+
+        if candidate_provider is not None or inference_engine is not None:
             if classified.document_id != document_id:
                 raise ValueError("Classifier returned predictions for a different document.")
             candidate_predictions = [
@@ -174,7 +208,6 @@ class ClinicalCodingPipeline:
                 for pred in classified.predictions
             ]
             analysis_source = "module2_classifier"
-            analysis_source_label = "Module 2 classifier provider output; model/checkpoint determined by provider"
 
         # 2. Module 3 Neuro-symbolic verification
         predicted_codes = []

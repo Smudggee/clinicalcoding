@@ -1,0 +1,23 @@
+{
+    "dataset_file": "test_dataset.csv",
+    "total_records": 5,
+    "columns": [
+        "patient_id",
+        "text",
+        "codes"
+    ],
+    "missing_values": {
+        "patient_id": 0,
+        "text": 1,
+        "codes": 0
+    },
+    "duplicate_records": 1,
+    "patient_id_column": "patient_id",
+    "unique_patients": 4,
+    "label_column": "codes",
+    "label_frequency": {
+        "ICD_A": 3,
+        "ICD_B": 2
+    },
+    "synthetic_data": true
+}
