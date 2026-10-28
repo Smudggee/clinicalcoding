@@ -1,6 +1,6 @@
 """
 Training and validation pipeline for the BioClinicalBERT multi-label classifier.
-Implements BCEWithLogitsLoss / FocalLoss, validation metrics computation,
+Implements BCEWithLogitsLoss / class_weighted_bce / FocalLoss, validation metrics computation,
 and checkpoint saving.
 """
 import os
@@ -14,9 +14,20 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from .model import BioClinicalBERTClassifier
-from .dataset import ClinicalDataset
-from .losses import FocalLoss
+# Ensure project root is in sys.path for direct script execution
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+try:
+    from .model import BioClinicalBERTClassifier
+    from .dataset import ClinicalDataset
+    from .losses import FocalLoss, class_weighted_bce
+except (ImportError, ValueError):
+    from module2_classifier.model import BioClinicalBERTClassifier
+    from module2_classifier.dataset import ClinicalDataset
+    from module2_classifier.losses import FocalLoss, class_weighted_bce
+
 from evaluation.metrics import micro_macro_f1
 
 
@@ -110,6 +121,9 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--max_length", type=int, default=512)
     parser.add_argument("--use_focal_loss", action="store_true", help="Use Focal Loss instead of BCE")
+    parser.add_argument("--use_weighted_bce", action="store_true", help="Use class_weighted_bce with pos_weight from training data")
+    parser.add_argument("--loss_type", type=str, default=None, choices=["bce", "focal", "weighted_bce"],
+                        help="Loss function: 'bce', 'focal', or 'weighted_bce'")
     parser.add_argument("--device", type=str, default=None, help="cpu or cuda")
     args = parser.parse_args()
 
@@ -138,7 +152,21 @@ def main():
     # Initialize Model, Optimizer, Loss Function
     model = BioClinicalBERTClassifier(num_labels=num_labels, model_name=args.model_name).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
-    loss_fn = FocalLoss() if args.use_focal_loss else torch.nn.BCEWithLogitsLoss()
+
+    # Loss function selection
+    if args.loss_type == "focal" or args.use_focal_loss:
+        loss_fn = FocalLoss()
+        loss_name = "FocalLoss"
+    elif args.loss_type == "weighted_bce" or args.use_weighted_bce:
+        pos_weight = train_dataset.get_pos_weights().to(device)
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        loss_name = "class_weighted_bce"
+        print(f"Using class_weighted_bce with pos_weight: [{pos_weight.min():.2f}, {pos_weight.max():.2f}]")
+    else:
+        loss_fn = torch.nn.BCEWithLogitsLoss()
+        loss_name = "BCEWithLogitsLoss"
+
+    print(f"Loss function: {loss_name}")
 
     best_f1 = -1.0
     os.makedirs(args.save_dir, exist_ok=True)
@@ -162,7 +190,7 @@ def main():
                 "lr": args.lr,
                 "model_name": args.model_name,
                 "num_labels": num_labels,
-                "loss_type": "FocalLoss" if args.use_focal_loss else "BCEWithLogitsLoss",
+                "loss_type": loss_name,
                 "best_val_f1_micro": f1_micro,
                 "best_val_loss": val_loss
             }
