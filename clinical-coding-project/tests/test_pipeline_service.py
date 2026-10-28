@@ -112,6 +112,7 @@ def test_checkpoint_engine_status_and_output_are_reported(monkeypatch):
         assert pipeline.classifier_status == "ready"
         assert "test-encoder" in result["analysisSourceLabel"]
         assert result["analysisSource"] == "module2_classifier"
+        assert calls[0]["threshold"] == 0.30
         assert calls[0]["full_text"] == "Assessment: sepsis present."
     finally:
         checkpoint.unlink(missing_ok=True)
@@ -130,3 +131,10 @@ def test_checkpoint_initialization_failure_is_not_reported_as_demo(monkeypatch):
             pipeline.analyze_document("case-bad-engine", "Assessment: sepsis present.")
     finally:
         checkpoint.unlink(missing_ok=True)
+
+
+def test_classifier_can_be_disabled_for_fast_demo_case_seeding():
+    pipeline = ClinicalCodingPipeline(enable_classifier=False)
+
+    assert pipeline.classifier_status == "not_configured"
+    assert pipeline.inference_engine is None

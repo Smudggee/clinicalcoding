@@ -126,7 +126,8 @@ class ClinicalCodingPipeline:
     def __init__(self, review_threshold: float = 0.50, auto_accept_threshold: float = 0.85,
                  candidate_provider: Optional[Callable[[IngestedDocument], ClassifiedDocument]] = None,
                  classifier_checkpoint_path: Optional[str] = None,
-                 inference_engine_factory: Optional[Callable[..., Any]] = None):
+                 inference_engine_factory: Optional[Callable[..., Any]] = None,
+                 enable_classifier: bool = True):
         self.chunker = SlidingWindowChunker(window_size=512, stride=256)
         self.candidate_provider = candidate_provider
         self.classifier_status = "provider_configured" if candidate_provider else "not_configured"
@@ -146,7 +147,7 @@ class ClinicalCodingPipeline:
             "ACCS_CLASSIFIER_CHECKPOINT",
             os.path.join(PROJECT_ROOT, "module2_classifier", "checkpoints", "best_model.pt"),
         )
-        if self.candidate_provider is None and os.path.isfile(checkpoint_path):
+        if enable_classifier and self.candidate_provider is None and os.path.isfile(checkpoint_path):
             try:
                 if inference_engine_factory is None:
                     from module2_classifier.inference import ClinicalInferenceEngine
@@ -154,7 +155,7 @@ class ClinicalCodingPipeline:
                 self.inference_engine = inference_engine_factory(checkpoint_path=checkpoint_path)
                 self.classifier_status = "ready"
                 encoder_name = getattr(getattr(self.inference_engine, "model", None), "model_name", "configured encoder")
-                self.classifier_source_label = f"Module 2 trained checkpoint inference ({encoder_name})"
+                self.classifier_source_label = f"Module 2 trained checkpoint inference ({encoder_name}; threshold=0.30)"
             except Exception as e:
                 self.classifier_initialization_error = str(e)
                 self.classifier_status = "load_failed"
@@ -191,7 +192,7 @@ class ClinicalCodingPipeline:
             classified = inference_engine.predict(
                 text_or_windows=ingested.windows,
                 document_id=document_id,
-                threshold=0.15,
+                threshold=0.30,
                 full_text=normalized_text,
             )
             analysis_source_label = getattr(

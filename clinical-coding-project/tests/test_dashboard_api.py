@@ -17,6 +17,7 @@ atexit.register(lambda: _STARTUP_DATABASE.unlink(missing_ok=True))
 from module4_dashboard.backend.app import main
 from module4_dashboard.backend.app.schemas import AnalyzeRequest, RejectRequest, SystemSettings
 from module4_dashboard.backend.app.storage import SQLiteCaseAuditStore
+from module4_dashboard.backend.app.pipeline_service import ClinicalCodingPipeline
 
 
 @pytest.fixture
@@ -26,12 +27,71 @@ def test_database_path():
     path.unlink(missing_ok=True)
 
 
-def test_health_reports_classifier_as_unconfigured():
+def test_health_reports_classifier_as_unconfigured(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(main, "pipeline", SimpleNamespace(classifier_status="not_configured"))
     health = main.health()
 
     assert health["classifier_status"] == "not_configured"
     assert health["analysis_mode"] == "rule_based_demo"
     assert any("no checkpoint configured" in module for module in health["modules"])
+
+
+def test_health_reports_classifier_load_failure(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(main, "pipeline", SimpleNamespace(classifier_status="load_failed"))
+
+    health = main.health()
+
+    assert health["classifier_status"] == "load_failed"
+    assert health["analysis_mode"] == "classifier_error"
+    assert any("analysis will return an error" in module for module in health["modules"])
+
+
+def test_startup_skips_demo_seed_cases_if_classifier_failed(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(main, "pipeline", SimpleNamespace(classifier_status="load_failed"))
+    monkeypatch.setattr(main, "CASES_STORE", [])
+    monkeypatch.setattr(main, "AUDIT_STORE", [])
+
+    main._seed_initial_cases()
+
+    assert main.CASES_STORE == []
+    assert main.AUDIT_STORE == []
+
+
+def test_sample_cases_stay_rule_based_when_real_classifier_is_ready(monkeypatch, test_database_path):
+    from types import SimpleNamespace
+
+    created = []
+
+    class _SeedPipeline:
+        def analyze_document(self, document_id, raw_text, patient_id=None):
+            return {
+                "id": document_id,
+                "analysisSource": "rule_based_demo",
+                "analysisSourceLabel": "Rule-based demo predictions (keyword matching; not BioClinicalBERT)",
+            }
+
+    def _pipeline_factory(**kwargs):
+        created.append(kwargs)
+        return _SeedPipeline()
+
+    monkeypatch.setattr(
+        main,
+        "pipeline",
+        SimpleNamespace(classifier_status="ready", review_threshold=0.5, auto_accept_threshold=0.85),
+    )
+    monkeypatch.setattr(main, "ClinicalCodingPipeline", _pipeline_factory)
+    monkeypatch.setattr(main, "PROJECT_ROOT", str(test_database_path.parent / "seed-data-unavailable"))
+    monkeypatch.setattr(main, "CASES_STORE", [])
+    monkeypatch.setattr(main, "AUDIT_STORE", [])
+
+    main._seed_initial_cases()
+
+    assert created == [{"review_threshold": 0.5, "auto_accept_threshold": 0.85, "enable_classifier": False}]
+    assert len(main.CASES_STORE) == 2
+    assert {case["analysisSource"] for case in main.CASES_STORE} == {"rule_based_demo"}
 
 
 def test_admin_settings_validate_and_persist(monkeypatch, test_database_path):
@@ -90,6 +150,11 @@ def test_analysis_source_and_audit_persist_over_http(monkeypatch, test_database_
     monkeypatch.setattr(main, "CASES_STORE", [])
     monkeypatch.setattr(main, "AUDIT_STORE", [])
     monkeypatch.setattr(main, "storage", SQLiteCaseAuditStore(test_database_path))
+    monkeypatch.setattr(
+        main,
+        "pipeline",
+        ClinicalCodingPipeline(classifier_checkpoint_path=str(test_database_path.with_suffix(".pt"))),
+    )
 
     with TestClient(main.app) as client:
         response = client.post(

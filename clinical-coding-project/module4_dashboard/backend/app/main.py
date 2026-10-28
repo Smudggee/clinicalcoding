@@ -75,11 +75,23 @@ def _persist_state():
 
 def _seed_initial_cases():
     """Initializes cases store with sample discharge summaries analyzed by the pipeline."""
+    if getattr(pipeline, "classifier_status", None) == "load_failed":
+        print("[Startup] Skipping demo-case seeding because the configured classifier failed to load.")
+        return
+
+    seed_pipeline = pipeline
+    if getattr(pipeline, "classifier_status", None) in {"ready", "provider_configured"}:
+        seed_pipeline = ClinicalCodingPipeline(
+            review_threshold=pipeline.review_threshold,
+            auto_accept_threshold=pipeline.auto_accept_threshold,
+            enable_classifier=False,
+        )
+
     sample_path = os.path.join(PROJECT_ROOT, "data", "sample_note.txt")
     if os.path.exists(sample_path):
         with open(sample_path, "r", encoding="utf-8") as f:
             sample_text = f.read()
-        case_sample = pipeline.analyze_document(
+        case_sample = seed_pipeline.analyze_document(
             document_id="CASE-2024-0831",
             raw_text=sample_text,
             patient_id="P-4821",
@@ -96,7 +108,7 @@ def _seed_initial_cases():
         "corticosteroids, nebulized bronchodilators, and antibiotics. Creatinine levels monitored throughout admission; "
         "no significant acute-on-chronic deterioration noted. Patient responded well and was discharged on optimized inhalers."
     )
-    case2 = pipeline.analyze_document(document_id="CASE-2024-0832", raw_text=case2_text, patient_id="P-6109")
+    case2 = seed_pipeline.analyze_document(document_id="CASE-2024-0832", raw_text=case2_text, patient_id="P-6109")
     CASES_STORE.append(case2)
 
     # Add Case 3: Pneumonia + COPD history
@@ -107,7 +119,7 @@ def _seed_initial_cases():
         "exacerbation was clinically challenging. Treatment initiated with broad-spectrum antibiotics alongside bronchodilator therapy. "
         "Patient's previous COPD diagnosis documented from prior admissions. Discharged stable on oral antibiotics."
     )
-    case3 = pipeline.analyze_document(document_id="CASE-2024-0833", raw_text=case3_text, patient_id="P-7740")
+    case3 = seed_pipeline.analyze_document(document_id="CASE-2024-0833", raw_text=case3_text, patient_id="P-7740")
     CASES_STORE.append(case3)
 
     # Seed initial audit trail entries
