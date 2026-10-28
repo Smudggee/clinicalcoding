@@ -1,7 +1,8 @@
+"""Local speech-to-text service supporting Whisper (large-v3, small) and Transformers backends."""
 
-"""Local speech-to-text service supporting two Whisper backends."""
-
+import argparse
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 
@@ -18,27 +19,32 @@ MALAYALAM_MODEL_PATH = (
 
 ALTERNATIVE_MODEL_NAME = "sajilck/whisper-small-malayalam-v2"
 
-# FFmpeg executable installed through WinGet on Windows.
+# FFmpeg executable detection: checks system PATH first, then WinGet installation path.
+_system_ffmpeg = shutil.which("ffmpeg")
 FFMPEG_PATH = (
-    Path.home()
-    / "AppData"
-    / "Local"
-    / "Microsoft"
-    / "WinGet"
-    / "Packages"
-    / "Gyan.FFmpeg.Shared_Microsoft.Winget.Source_8wekyb3d8bbwe"
-    / "ffmpeg-9.0.2-full_build-shared"
-    / "bin"
-    / "ffmpeg.exe"
+    Path(_system_ffmpeg)
+    if _system_ffmpeg
+    else (
+        Path.home()
+        / "AppData"
+        / "Local"
+        / "Microsoft"
+        / "WinGet"
+        / "Packages"
+        / "Gyan.FFmpeg.Shared_Microsoft.Winget.Source_8wekyb3d8bbwe"
+        / "ffmpeg-9.0.2-full_build-shared"
+        / "bin"
+        / "ffmpeg.exe"
+    )
 )
 
 
 class WhisperTranscriptionService:
-    """Transcribe audio using faster-whisper or Transformers."""
+    """Transcribe audio using faster-whisper (supports large-v3, small) or Transformers."""
 
     def __init__(
         self,
-        model_size="small",
+        model_size="large-v3",
         device="cpu",
         model_path=None,
         backend="faster-whisper",
@@ -69,7 +75,7 @@ class WhisperTranscriptionService:
         return self.alternative_model
 
     def load_model(self):
-        """Load the existing faster-whisper model on demand."""
+        """Load the faster-whisper model (large-v3, small, etc.) on demand."""
         if self.model is None:
             selected_model = (
                 str(self.model_path)
@@ -107,7 +113,7 @@ class WhisperTranscriptionService:
         if self.backend == "alternative":
             alternative_model = self.load_alternative_model()
 
-            if not FFMPEG_PATH.is_file():
+            if not Path(FFMPEG_PATH).is_file():
                 raise FileNotFoundError(
                     f"FFmpeg executable not found: {FFMPEG_PATH}"
                 )
@@ -161,7 +167,7 @@ class WhisperTranscriptionService:
                 ],
             }
 
-        # Existing faster-whisper backend.
+        # faster-whisper backend (large-v3, small, etc.)
         elif self.backend == "faster-whisper":
             model = self.load_model()
 
@@ -208,5 +214,26 @@ class WhisperTranscriptionService:
             )
 
 
+def main():
+    parser = argparse.ArgumentParser(description="Local Whisper Clinical Transcription Service")
+    parser.add_argument("--audio", type=str, required=True, help="Path to audio file")
+    parser.add_argument("--model", type=str, default="large-v3", help="Whisper model size (large-v3, small, etc.)")
+    parser.add_argument("--language", type=str, default="ml", help="Language code ('ml' for Malayalam, 'en' for English)")
+    parser.add_argument("--device", type=str, default="cpu", help="Device ('cpu' or 'cuda')")
+    parser.add_argument("--backend", type=str, default="faster-whisper", choices=["faster-whisper", "alternative"])
+    args = parser.parse_args()
+
+    service = WhisperTranscriptionService(
+        model_size=args.model,
+        device=args.device,
+        backend=args.backend,
+    )
+    print(f"Transcribing {args.audio} using {args.backend} ({args.model})...")
+    result = service.transcribe(args.audio, language=args.language)
+    print("\n--- Transcription Result ---")
+    print(f"Language: {result['language']} (p={result['language_probability']})")
+    print(f"Transcript:\n{result['transcript']}")
+
+
 if __name__ == "__main__":
-    print("Whisper transcription service is ready.")
+    main()

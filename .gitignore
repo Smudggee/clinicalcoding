@@ -11,3 +11,5 @@ __pycache__/
 /clinical-coding-project/evaluation/test_output/
 /clinical-coding-project/evaluation/synthetic_records.json
 /models/
+gantt_chart.html
+gantt_chart.jpg
