@@ -29,7 +29,9 @@ def test_database_path():
 def test_health_reports_classifier_as_unconfigured():
     health = main.health()
 
-    assert any("not configured" in module for module in health["modules"])
+    assert health["classifier_status"] == "not_configured"
+    assert health["analysis_mode"] == "rule_based_demo"
+    assert any("no checkpoint configured" in module for module in health["modules"])
 
 
 def test_admin_settings_validate_and_persist(monkeypatch, test_database_path):
@@ -119,6 +121,51 @@ def test_analysis_source_and_audit_persist_over_http(monkeypatch, test_database_
     assert persisted_audit[0]["caseId"] == "CASE-ANALYSIS-PERSIST-1"
 
 
+def test_audio_transcription_returns_a_reviewable_draft_and_removes_temp_file(monkeypatch):
+    observed = {}
+
+    class _StubService:
+        def transcribe(self, audio_path, language=None):
+            audio_path = Path(audio_path)
+            observed["path"] = audio_path
+            observed["bytes"] = audio_path.read_bytes()
+            observed["language"] = language
+            return {
+                "transcript": "Patient reports cough.",
+                "language": "ml",
+                "language_probability": 0.82,
+                "segments": [{"start": 0.0, "end": 1.2, "text": "Patient reports cough."}],
+            }
+
+    monkeypatch.setattr(main, "_create_transcription_service", lambda: _StubService())
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/transcribe?language=ml",
+            content=b"test audio bytes",
+            headers={"X-Audio-Filename": "sample.m4a", "Content-Type": "audio/mp4"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["transcript"] == "Patient reports cough."
+    assert response.json()["languageProbability"] == 0.82
+    assert "review and correct" in response.json()["transcriptionSourceLabel"]
+    assert observed["bytes"] == b"test audio bytes"
+    assert observed["language"] == "ml"
+    assert not observed["path"].exists()
+
+
+def test_audio_transcription_reports_missing_optional_dependency(monkeypatch):
+    monkeypatch.setattr(main, "_create_transcription_service", lambda: (_ for _ in ()).throw(ImportError()))
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/transcribe",
+            content=b"test audio bytes",
+            headers={"X-Audio-Filename": "sample.wav", "Content-Type": "audio/wav"},
+        )
+    assert response.status_code == 503
+    assert "Install the faster-whisper dependency" in response.json()["detail"]
+
+
 def test_reject_code_records_review_reason_and_audit(monkeypatch, test_database_path):
     case = {
         "id": "case-reject-test",
@@ -170,6 +217,9 @@ def test_case_review_actions_and_audit_trail_over_http(monkeypatch, test_databas
 
     with TestClient(main.app) as client:
         assert client.get("/api/cases/CASE-HTTP-1").status_code == 200
+        pending_submit = client.post("/api/cases/CASE-HTTP-1/submit", json={"coderName": "Coder"})
+        assert pending_submit.status_code == 409
+        assert "Review every predicted code" in pending_submit.json()["detail"]
         assert client.post("/api/cases/CASE-HTTP-1/codes/code-confirm/confirm", json={"coderName": "Coder"}).status_code == 200
         assert client.post(
             "/api/cases/CASE-HTTP-1/codes/code-override/override",
@@ -197,6 +247,10 @@ def test_case_review_actions_and_audit_trail_over_http(monkeypatch, test_databas
         submitted_case = client.get("/api/cases/CASE-HTTP-1").json()
         assert submitted_case["status"] == "Completed"
         assert submitted_case["submittedToBilling"] is True
+        assert client.post("/api/cases/CASE-HTTP-1/submit", json={"coderName": "Coder"}).status_code == 409
+        assert client.post(
+            "/api/cases/CASE-HTTP-1/codes/code-confirm/confirm", json={"coderName": "Coder"}
+        ).status_code == 409
         final_audit = client.get("/api/audit", params={"caseId": "CASE-HTTP-1"}).json()
         assert [entry["action"] for entry in final_audit].count("Submitted") == 1
 

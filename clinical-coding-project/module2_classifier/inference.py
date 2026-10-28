@@ -234,7 +234,7 @@ class ClinicalInferenceEngine:
 
         for c_idx in ranked_indices:
             prob = doc_probs[c_idx].item()
-            if prob < threshold and (top_k is None or len(candidate_predictions) >= top_k):
+            if prob < threshold:
                 continue
 
             code_str = self.id_to_label.get(c_idx, f"UNKNOWN_{c_idx}")

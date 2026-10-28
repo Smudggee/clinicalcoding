@@ -29,18 +29,9 @@ class BioClinicalBERTClassifier(nn.Module):
         self.num_labels = num_labels
         self.model_name = model_name
 
-        try:
-            from transformers import AutoModel, AutoConfig
-            config = AutoConfig.from_pretrained(model_name)
-            self.encoder = AutoModel.from_pretrained(model_name, config=config)
-            h_size = config.hidden_size
-        except Exception:
-            # Fallback for environments without internet / mock mode
-            h_size = hidden_size or 768
-            self.encoder = nn.TransformerEncoder(
-                nn.TransformerEncoderLayer(d_model=h_size, nhead=8, batch_first=True),
-                num_layers=2
-            )
+        from transformers import AutoModel
+        self.encoder = AutoModel.from_pretrained(model_name)
+        h_size = self.encoder.config.hidden_size
 
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(h_size, num_labels)
@@ -97,10 +88,17 @@ class BioClinicalBERTClassifier(nn.Module):
         model_name = checkpoint.get("model_name", "emilyalsentzer/Bio_ClinicalBERT")
 
         model = cls(num_labels=num_labels, model_name=model_name)
-        model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        state_dict = checkpoint.get("model_state_dict")
+        if not isinstance(state_dict, dict):
+            raise ValueError("Checkpoint does not contain a model_state_dict.")
+        model.load_state_dict(state_dict, strict=True)
         model.to(device)
         model.eval()
 
         label_map = checkpoint.get("label_map", {})
+        if not isinstance(label_map, dict) or len(label_map) != num_labels:
+            raise ValueError("Checkpoint label map does not match its classifier output size.")
+        if sorted(label_map.values()) != list(range(num_labels)):
+            raise ValueError("Checkpoint label indices must be contiguous from zero.")
         print(f"Loaded checkpoint from {checkpoint_path} with {num_labels} labels on {device}.")
         return model, label_map

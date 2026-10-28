@@ -166,6 +166,32 @@ export async function apiAnalyzeNote(text: string, patientId?: string, documentI
   }
 }
 
+export async function apiTranscribeAudio(
+  file: File,
+  language?: "ml" | "en",
+): Promise<{
+  transcript: string;
+  language: string;
+  languageProbability: number;
+  segments: Array<{ start: number; end: number; text: string }>;
+  transcriptionSourceLabel: string;
+}> {
+  const query = language ? `?language=${encodeURIComponent(language)}` : "";
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/transcribe${query}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${_token}`, "X-Audio-Filename": file.name },
+      body: file,
+      signal: AbortSignal.timeout(10 * 60 * 1000),
+    });
+  } catch {
+    throw new Error("Audio transcription is unavailable because the backend could not be reached.");
+  }
+  if (!response.ok) throw await responseError(response, `Audio transcription failed (${response.status}).`);
+  return await response.json();
+}
+
 export async function apiConfirmCode(
   caseId: string,
   codeId: string,

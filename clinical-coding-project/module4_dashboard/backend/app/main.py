@@ -9,10 +9,13 @@ Integrates:
 """
 import os
 import sys
+import asyncio
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional
 from uuid import uuid4
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 # Ensure project root is on sys.path
@@ -142,15 +145,28 @@ if not CASES_STORE:
 
 @app.get("/health")
 def health():
+    classifier_status = getattr(pipeline, "classifier_status", "unknown")
+    if classifier_status == "ready":
+        classifier_module_status = "module2_classifier (trained checkpoint loaded; inference ready)"
+    elif classifier_status == "provider_configured":
+        classifier_module_status = "module2_classifier (candidate provider configured)"
+    elif classifier_status == "load_failed":
+        classifier_module_status = "module2_classifier (checkpoint load failed; analysis will return an error)"
+    else:
+        classifier_module_status = "module2_classifier (interface available; no checkpoint configured)"
     return {
         "status": "ok",
         "version": "2.0.0",
         "modules": [
             "module1_ingestion (SlidingWindow)",
-            "module2_classifier (not configured: no trained checkpoint or inference interface)",
+            classifier_module_status,
             "module3_verification (NeuroSymbolic Verification)",
             "module4_dashboard (HITL Review)",
         ],
+        "classifier_status": classifier_status,
+        "analysis_mode": "module2_classifier" if classifier_status in {"ready", "provider_configured"} else (
+            "classifier_error" if classifier_status == "load_failed" else "rule_based_demo"
+        ),
         "cases_count": len(CASES_STORE),
         "audit_entries_count": len(AUDIT_STORE),
     }
@@ -242,11 +258,76 @@ def analyze_note(req: AnalyzeRequest):
         "action": "Predicted",
         "codeAffected": f"{len(new_case['predictedCodes'])} codes",
         "oldValue": "—",
-        "newValue": "Rule-based demo keyword matching + neuro-symbolic verifier",
+        "newValue": new_case["analysisSourceLabel"],
     })
     _persist_state()
 
     return new_case
+
+
+MAX_AUDIO_UPLOAD_BYTES = 25 * 1024 * 1024
+ALLOWED_AUDIO_SUFFIXES = {".m4a", ".mp3", ".wav", ".flac", ".ogg", ".aac"}
+
+
+def _create_transcription_service():
+    """Load the optional speech service only when an audio upload is requested."""
+    from module1_ingestion.stt.whisper_service import WhisperTranscriptionService
+
+    return WhisperTranscriptionService(model_size=os.environ.get("ACCS_WHISPER_MODEL", "small"))
+
+
+@app.post("/api/transcribe")
+async def transcribe_audio(
+    request: Request,
+    x_audio_filename: str = Header(..., alias="X-Audio-Filename"),
+    language: Optional[str] = Query(None, description="Use 'ml', 'en', or omit for language detection."),
+):
+    """Return an experimental transcript draft for a human to review and correct."""
+    suffix = Path(x_audio_filename).suffix.lower()
+    if suffix not in ALLOWED_AUDIO_SUFFIXES:
+        raise HTTPException(status_code=415, detail="Unsupported audio format.")
+    if language not in {None, "ml", "en"}:
+        raise HTTPException(status_code=422, detail="Language must be 'ml', 'en', or omitted for automatic detection.")
+
+    audio_payload = bytearray()
+    async for chunk in request.stream():
+        audio_payload.extend(chunk)
+        if len(audio_payload) > MAX_AUDIO_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Audio uploads must be 25 MB or smaller.")
+    if not audio_payload:
+        raise HTTPException(status_code=400, detail="The uploaded audio file is empty.")
+
+    try:
+        service = _create_transcription_service()
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Audio transcription is unavailable. Install the faster-whisper dependency first.",
+        ) from exc
+
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as audio_file:
+            audio_file.write(audio_payload)
+            temp_path = audio_file.name
+        result = await asyncio.to_thread(service.transcribe, temp_path, language=language)
+        return {
+            "transcript": result["transcript"],
+            "language": result["language"],
+            "languageProbability": result["language_probability"],
+            "segments": result["segments"],
+            "transcriptionSourceLabel": "Experimental local Whisper transcript; review and correct before analysis.",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Audio transcription failed: {exc}") from exc
+    finally:
+        if temp_path:
+            Path(temp_path).unlink(missing_ok=True)
+
+
+def _require_case_open_for_review(case: dict) -> None:
+    if case.get("submittedToBilling"):
+        raise HTTPException(status_code=409, detail="Submitted cases cannot be changed.")
 
 
 @app.post("/api/cases/{case_id}/codes/{code_id}/confirm")
@@ -254,6 +335,7 @@ def confirm_code(case_id: str, code_id: str, req: ConfirmRequest):
     case = next((c for c in CASES_STORE if c["id"] == case_id), None)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found.")
+    _require_case_open_for_review(case)
 
     code_obj = next((cd for cd in case["predictedCodes"] if cd["id"] == code_id), None)
     if not code_obj:
@@ -280,6 +362,7 @@ def reject_code(case_id: str, code_id: str, req: RejectRequest):
     case = next((c for c in CASES_STORE if c["id"] == case_id), None)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found.")
+    _require_case_open_for_review(case)
 
     code_obj = next((cd for cd in case["predictedCodes"] if cd["id"] == code_id), None)
     if not code_obj:
@@ -308,6 +391,7 @@ def override_code(case_id: str, code_id: str, req: OverrideRequest):
     case = next((c for c in CASES_STORE if c["id"] == case_id), None)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found.")
+    _require_case_open_for_review(case)
 
     code_obj = next((cd for cd in case["predictedCodes"] if cd["id"] == code_id), None)
     if not code_obj:
@@ -337,6 +421,14 @@ def submit_case(case_id: str, req: SubmitRequest):
     case = next((c for c in CASES_STORE if c["id"] == case_id), None)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found.")
+    if case.get("submittedToBilling"):
+        raise HTTPException(status_code=409, detail="Case has already been submitted.")
+
+    predicted_codes = case.get("predictedCodes", [])
+    if any(not code.get("userAction") for code in predicted_codes):
+        raise HTTPException(status_code=409, detail="Review every predicted code before submitting the case.")
+    if not any(code.get("userAction") in {"confirmed", "overridden"} for code in predicted_codes):
+        raise HTTPException(status_code=409, detail="Confirm or override at least one code before submitting the case.")
 
     case["status"] = "Completed"
     case["submittedToBilling"] = True

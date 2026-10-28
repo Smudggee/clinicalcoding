@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import type { AuthState, CaseItem, AuditEntry } from "../types";
-import { apiGetCases, apiGetAudit, apiAnalyzeNote } from "../api";
+import { apiGetCases, apiGetAudit, apiAnalyzeNote, apiTranscribeAudio } from "../api";
 import { CaseStatusBadge } from "../components/StatusBadge";
 import { TableRowSkeleton } from "../components/Skeleton";
 import Header from "../components/Header";
@@ -34,17 +34,41 @@ export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
   const [customNote, setCustomNote] = useState("");
   const [patientId, setPatientId] = useState("P-9901");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [transcriptionLanguage, setTranscriptionLanguage] = useState<"" | "ml" | "en">("");
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [transcriptionNotice, setTranscriptionNotice] = useState<string | null>(null);
+
+  async function transcribeAudio() {
+    if (!audioFile) return;
+    setIsTranscribing(true);
+    setTranscriptionError(null);
+    setTranscriptionNotice(null);
+    try {
+      const result = await apiTranscribeAudio(audioFile, transcriptionLanguage || undefined);
+      setCustomNote(result.transcript);
+      setTranscriptionNotice(
+        `${result.transcriptionSourceLabel} Detected language: ${result.language} (language probability ${Math.round(result.languageProbability * 100)}%).`,
+      );
+    } catch (error) {
+      setTranscriptionError(error instanceof Error ? error.message : "Audio transcription failed.");
+    } finally {
+      setIsTranscribing(false);
+    }
+  }
 
   async function handleAnalyze() {
     if (!customNote.trim()) return;
     setIsAnalyzing(true);
+    setAnalysisError(null);
     try {
       const res = await apiAnalyzeNote(customNote, patientId);
       setIsAnalyzeOpen(false);
       setCustomNote("");
       onNavigate("case-review", res.id);
     } catch (e) {
-      alert("Analysis failed: " + e);
+      setAnalysisError(e instanceof Error ? e.message : "Clinical note analysis failed.");
     } finally {
       setIsAnalyzing(false);
     }
@@ -433,7 +457,7 @@ export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
 
       {isAnalyzeOpen && (
         <Modal
-          title="⚡ Test Person 2's Bio_ClinicalBERT Model"
+          title="Analyze clinical note"
           wide
           onClose={() => setIsAnalyzeOpen(false)}
           footer={
@@ -453,7 +477,7 @@ export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
               >
                 {isAnalyzing ? (
                   <>
-                    <span className="animate-spin text-base">⏳</span> Running Transformer...
+                    <span className="animate-spin text-base">⏳</span> Analyzing note...
                   </>
                 ) : (
                   "Predict ICD-10 Codes →"
@@ -463,6 +487,46 @@ export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
           }
         >
           <div className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Audio note <span className="font-normal text-slate-500">(experimental; review transcript before analysis)</span>
+              </label>
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <input
+                  type="file"
+                  accept=".m4a,.mp3,.wav,.flac,.ogg,.aac,audio/*"
+                  onChange={(event) => {
+                    setAudioFile(event.target.files?.[0] ?? null);
+                    setTranscriptionError(null);
+                    setTranscriptionNotice(null);
+                  }}
+                  className="min-w-0 flex-1 text-xs text-slate-600"
+                  aria-label="Choose audio note"
+                />
+                <select
+                  value={transcriptionLanguage}
+                  onChange={(event) => setTranscriptionLanguage(event.target.value as "" | "ml" | "en")}
+                  className="rounded border border-slate-200 px-2 py-1.5 text-xs"
+                  aria-label="Audio language"
+                >
+                  <option value="">Detect language</option>
+                  <option value="ml">Malayalam</option>
+                  <option value="en">English</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={transcribeAudio}
+                  disabled={!audioFile || isTranscribing}
+                  className="rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 disabled:opacity-50"
+                >
+                  {isTranscribing ? "Transcribing…" : "Preview transcript"}
+                </button>
+              </div>
+              {transcriptionError && <p className="mb-2 text-xs text-red-700" role="alert">{transcriptionError}</p>}
+              {transcriptionNotice && <p className="mb-2 text-xs text-amber-800" role="status">{transcriptionNotice}</p>}
+            </div>
+
+            {analysisError && <p className="text-sm text-red-700" role="alert">{analysisError}</p>}
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
                 Patient Identifier
@@ -516,7 +580,7 @@ export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
               />
             </div>
             <p className="text-xs text-slate-500 bg-blue-50 p-2.5 rounded-lg border border-blue-100">
-              💡 <b>Under the hood:</b> This note will be split via Person 1's sliding window (512 tokens, 256 stride), passed to your <b>Bio_ClinicalBERT Transformer</b> for multi-label inference, aggregated via max-pooling, verified by Person 3, and visualized on the HITL review screen!
+              The backend labels the analysis source on the results. If a trained checkpoint is unavailable, it uses a clearly labelled rule-based demo. If the backend cannot analyze the note, no predictions are generated.
             </p>
           </div>
         </Modal>

@@ -92,10 +92,10 @@ the backend to select another database file.
 
 ### Module 4 workflow and current limits
 
-- Submit a note from the Dashboard or `POST /api/cases/analyze`. The current
-  source is labelled `rule_based_demo`: candidate codes come from keyword
-  matching against an illustrative ICD-10 knowledge base and then pass through
-  the Module 3 verifier. These scores are not BioClinicalBERT predictions.
+- Submit a note from the Dashboard or `POST /api/cases/analyze`. If a usable
+  Module 2 checkpoint is configured, the pipeline reports classifier inference;
+  otherwise it labels keyword candidates as `rule_based_demo`. A checkpoint
+  load or inference error is surfaced instead of silently switching sources.
 - Confirm, reject, override, and submit actions update the case and create audit
   entries. Case data, audit history, and verifier thresholds persist in SQLite.
 - The Admin threshold is loaded from and saved to the backend. Its sample-case
@@ -103,9 +103,12 @@ the backend to select another database file.
 - Local mock cases and audit entries are labelled in the dashboard. Admin user
   management is local-only. Sign-in is prototype behavior: the app does not
   verify real accounts or enforce role permissions.
-- Module 2 currently has no trained task checkpoint or document-level
-  inference provider wired to the pipeline. Classifier integration remains
-  blocked until those are supplied and verified.
+- The classifier checkpoint is distributed separately and is not committed.
+  Set `ACCS_CLASSIFIER_CHECKPOINT` to its local path. `/health` reports whether
+  classifier inference is ready, unconfigured, or failed to load.
+- Audio transcription is an experimental local Whisper feature. Install the
+  backend requirements, upload a supported audio file from the Dashboard, and
+  review and correct the editable transcript before analyzing it.
 - The ICD sample list and verifier rules are an academic prototype and do not
   establish clinical coding correctness.
 

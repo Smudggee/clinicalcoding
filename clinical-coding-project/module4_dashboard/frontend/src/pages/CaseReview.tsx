@@ -330,6 +330,11 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
                               <VerificationBadge status={code.verificationStatus} />
                             </div>
                             <p className="text-sm text-slate-600 leading-snug">{code.description}</p>
+                            {code.rejectReason && (
+                              <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900" role="status">
+                                <span className="font-semibold">Verification reason:</span> {code.rejectReason}
+                              </p>
+                            )}
                           </div>
 
                           {code.userAction && (

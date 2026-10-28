@@ -31,6 +31,7 @@ export interface PredictedCode {
   verificationStatus: VerificationStatus;
   attentionSpans: AttentionSpan[];
   supportingEvidence: string;
+  rejectReason?: string | null;
   userAction?: "confirmed" | "overridden" | "rejected";
   userReason?: string;
   overrideCode?: string;

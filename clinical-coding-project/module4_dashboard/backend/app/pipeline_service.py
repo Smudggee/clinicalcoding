@@ -124,9 +124,13 @@ def tokenize_words(text: str) -> List[str]:
 
 class ClinicalCodingPipeline:
     def __init__(self, review_threshold: float = 0.50, auto_accept_threshold: float = 0.85,
-                 candidate_provider: Optional[Callable[[IngestedDocument], ClassifiedDocument]] = None):
+                 candidate_provider: Optional[Callable[[IngestedDocument], ClassifiedDocument]] = None,
+                 classifier_checkpoint_path: Optional[str] = None,
+                 inference_engine_factory: Optional[Callable[..., Any]] = None):
         self.chunker = SlidingWindowChunker(window_size=512, stride=256)
         self.candidate_provider = candidate_provider
+        self.classifier_status = "provider_configured" if candidate_provider else "not_configured"
+        self.classifier_source_label = "Module 2 classifier provider output; model/checkpoint determined by provider"
         self.ontology = ICDOntology()
         self.review_threshold = review_threshold
         self.auto_accept_threshold = auto_accept_threshold
@@ -138,17 +142,22 @@ class ClinicalCodingPipeline:
 
         self.inference_engine = None
         self.classifier_initialization_error = None
-        checkpoint_path = os.environ.get(
+        checkpoint_path = classifier_checkpoint_path or os.environ.get(
             "ACCS_CLASSIFIER_CHECKPOINT",
             os.path.join(PROJECT_ROOT, "module2_classifier", "checkpoints", "best_model.pt"),
         )
-        if self.candidate_provider is None and os.path.exists(checkpoint_path):
+        if self.candidate_provider is None and os.path.isfile(checkpoint_path):
             try:
-                from module2_classifier.inference import ClinicalInferenceEngine
-                self.inference_engine = ClinicalInferenceEngine(checkpoint_path=checkpoint_path)
-                print(f"[Pipeline] Loaded Module 2 classifier from {checkpoint_path}")
+                if inference_engine_factory is None:
+                    from module2_classifier.inference import ClinicalInferenceEngine
+                    inference_engine_factory = ClinicalInferenceEngine
+                self.inference_engine = inference_engine_factory(checkpoint_path=checkpoint_path)
+                self.classifier_status = "ready"
+                encoder_name = getattr(getattr(self.inference_engine, "model", None), "model_name", "configured encoder")
+                self.classifier_source_label = f"Module 2 trained checkpoint inference ({encoder_name})"
             except Exception as e:
                 self.classifier_initialization_error = str(e)
+                self.classifier_status = "load_failed"
                 print(f"[Pipeline] Classifier checkpoint is present but could not be loaded: {e}")
 
     def update_thresholds(self, review_threshold: float, auto_accept_threshold: float):
@@ -173,7 +182,11 @@ class ClinicalCodingPipeline:
         # checkpoint. Use keyword matching only when no classifier is available.
         if candidate_provider is not None:
             classified = candidate_provider(ingested)
-            analysis_source_label = "Module 2 classifier provider output; model/checkpoint determined by provider"
+            analysis_source_label = getattr(
+                self,
+                "classifier_source_label",
+                "Module 2 classifier provider output; model/checkpoint determined by provider",
+            )
         elif inference_engine is not None:
             classified = inference_engine.predict(
                 text_or_windows=ingested.windows,
@@ -181,7 +194,11 @@ class ClinicalCodingPipeline:
                 threshold=0.15,
                 full_text=normalized_text,
             )
-            analysis_source_label = "Module 2 classifier checkpoint inference"
+            analysis_source_label = getattr(
+                self,
+                "classifier_source_label",
+                "Module 2 classifier checkpoint inference",
+            )
         elif classifier_initialization_error is not None:
             raise RuntimeError(
                 "Classifier checkpoint was found but could not be loaded: "
