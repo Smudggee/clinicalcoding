@@ -207,7 +207,7 @@ def test_audio_transcription_returns_a_reviewable_draft_and_removes_temp_file(mo
         response = client.post(
             "/api/transcribe?language=ml",
             content=b"test audio bytes",
-            headers={"X-Audio-Filename": "sample.m4a", "Content-Type": "audio/mp4"},
+            headers={"X-Audio-Filename": "sample.webm", "Content-Type": "audio/webm"},
         )
 
     assert response.status_code == 200
@@ -312,6 +312,11 @@ def test_case_review_actions_and_audit_trail_over_http(monkeypatch, test_databas
         submitted_case = client.get("/api/cases/CASE-HTTP-1").json()
         assert submitted_case["status"] == "Completed"
         assert submitted_case["submittedToBilling"] is True
+        assert submitted_case["submittedCodes"] == [
+            {"code": "A41.9", "action": "confirmed", "replacesCode": None, "reason": None},
+            {"code": "J18.1", "action": "overridden", "replacesCode": "J18.9", "reason": "More specific"},
+        ]
+        assert {code["code"] for code in submitted_case["submittedCodes"]}.isdisjoint({"E11.9", "J18.9"})
         assert client.post("/api/cases/CASE-HTTP-1/submit", json={"coderName": "Coder"}).status_code == 409
         assert client.post(
             "/api/cases/CASE-HTTP-1/codes/code-confirm/confirm", json={"coderName": "Coder"}
@@ -322,5 +327,6 @@ def test_case_review_actions_and_audit_trail_over_http(monkeypatch, test_databas
     # A newly opened store simulates a backend restart and must restore both records.
     persisted_cases, persisted_audit = SQLiteCaseAuditStore(database_path).load_state()
     assert persisted_cases[0]["status"] == "Completed"
+    assert persisted_cases[0]["submittedCodes"] == submitted_case["submittedCodes"]
     assert persisted_cases[0]["predictedCodes"][2]["userReason"] == "Not documented"
     assert {entry["action"] for entry in persisted_audit} >= {"Confirmed", "Overridden", "Rejected", "Submitted"}

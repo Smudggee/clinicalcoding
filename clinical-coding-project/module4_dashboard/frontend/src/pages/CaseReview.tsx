@@ -135,7 +135,7 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
     try {
       await apiSubmitCase(caseId, auth.user.name);
       setCaseData((prev) => prev ? { ...prev, status: "Completed", submittedToBilling: true } : prev);
-      addToast("success", `Case ${caseId} successfully submitted to billing.`);
+      addToast("success", "Reviewed-code submission snapshot saved. No external billing system is connected.");
       setConfirmSubmitOpen(false);
       setTimeout(() => onNavigate("dashboard"), 1500);
     } catch {
@@ -148,6 +148,7 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
   const allActioned = codes.every((c) => c.userAction);
   const confirmedCount = codes.filter((c) => c.userAction === "confirmed").length;
   const overriddenCount = codes.filter((c) => c.userAction === "overridden").length;
+  const submittedCodes = codes.filter((c) => c.userAction === "confirmed" || c.userAction === "overridden");
   const rejectedCount = codes.filter((c) => c.userAction === "rejected").length;
   const pendingCount = codes.filter((c) => !c.userAction).length;
   const weights = wordWeights();
@@ -189,7 +190,7 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
               <span className="text-sm text-slate-700 font-medium">{caseId}</span>
               {caseData.submittedToBilling && (
                 <span className="ml-2 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-success">
-                  ✓ Submitted to Billing
+                  ✓ Submission Snapshot Saved
                 </span>
               )}
             </>
@@ -474,12 +475,12 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
                 aria-disabled={!allActioned || confirmedCount + overriddenCount === 0 || !!caseData?.submittedToBilling}
               >
                 {caseData?.submittedToBilling
-                  ? "✓ Submitted to Billing"
+                  ? "✓ Submission Snapshot Saved"
                   : allActioned && confirmedCount + overriddenCount > 0
-                  ? "Submit Reviewed Codes to Billing"
+                  ? "Save Reviewed-Code Snapshot"
                   : allActioned
                   ? "No accepted codes to submit"
-                  : `Submit to Billing (${pendingCount} pending)`}
+                  : `Review all codes (${pendingCount} pending)`}
               </button>
             </div>
           </div>
@@ -564,7 +565,7 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
       {/* Submit Confirmation Modal */}
       {confirmSubmitOpen && (
         <Modal
-          title="Submit Codes to Billing"
+          title="Save Reviewed-Code Snapshot"
           onClose={() => setConfirmSubmitOpen(false)}
           footer={
             <>
@@ -588,12 +589,15 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
           <div className="space-y-4">
             <div className="rounded-lg p-4" style={{ background: "#eff6ff", borderLeft: "3px solid #2563EB" }}>
               <p className="text-sm text-slate-700">
-                You are about to submit <strong>{confirmedCount + overriddenCount} codes</strong> for case{" "}
-                <strong className="font-mono">{caseId}</strong> (Patient <strong>{caseData?.patientId}</strong>) to the billing system.
+                Save <strong>{submittedCodes.length} reviewed codes</strong> for case{" "}
+                <strong className="font-mono">{caseId}</strong> (Patient <strong>{caseData?.patientId}</strong>) as a local billing-submission snapshot.
               </p>
             </div>
+            <p className="text-xs text-amber-800" role="note">
+              Rejected suggestions are excluded. An override replaces its original code. This prototype records the reviewed list locally and does not connect to an external billing system.
+            </p>
             <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 overflow-hidden">
-              {codes.map((c) => (
+              {submittedCodes.map((c) => (
                 <div key={c.id} className="flex items-center gap-3 px-3 py-2.5 bg-white">
                   <span
                     className="font-mono text-sm font-semibold"
@@ -601,7 +605,8 @@ export default function CaseReview({ auth, caseId, onSignOut, onNavigate, addToa
                   >
                     {c.userAction === "overridden" && c.overrideCode ? c.overrideCode : c.code}
                   </span>
-                  <span className="text-xs text-slate-500 flex-1 truncate">{c.description}</span>
+                  {c.userAction === "overridden" && <span className="text-xs text-slate-500">replaces {c.code}</span>}
+                  <span className="flex-1" />
                   <span
                     className="text-xs px-2 py-0.5 rounded-full font-medium"
                     style={{

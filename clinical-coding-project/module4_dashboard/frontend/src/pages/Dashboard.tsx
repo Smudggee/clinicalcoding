@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { AuthState, CaseItem, AuditEntry } from "../types";
 import { apiGetCases, apiGetAudit, apiAnalyzeNote, apiTranscribeAudio } from "../api";
 import { CaseStatusBadge } from "../components/StatusBadge";
@@ -18,6 +18,7 @@ type SortField = "id" | "submittedAt" | "status" | "averageConfidence";
 type SortDir = "asc" | "desc";
 
 const PAGE_SIZE = 5;
+const MAX_RECORDING_BYTES = 25 * 1024 * 1024;
 
 export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
   const [cases, setCases] = useState<CaseItem[]>([]);
@@ -39,6 +40,122 @@ export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [transcriptionNotice, setTranscriptionNotice] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+
+  async function transcribeRecordedAudio(file: File) {
+    setIsTranscribing(true);
+    setTranscriptionError(null);
+    setTranscriptionNotice(null);
+    try {
+      const result = await apiTranscribeAudio(file, transcriptionLanguage || undefined);
+      setNoteText(result.transcript);
+      const probability = typeof result.languageProbability === "number"
+        ? ` (language probability ${Math.round(result.languageProbability * 100)}%)`
+        : "";
+      setTranscriptionNotice(
+        `${result.transcriptionSourceLabel} Transcript added to the note for review. Detected language: ${result.language}${probability}`,
+      );
+    } catch (error) {
+      setTranscriptionError(error instanceof Error ? error.message : "Voice transcription failed.");
+    } finally {
+      setIsTranscribing(false);
+    }
+  }
+
+  async function startVoiceRecording() {
+    setTranscriptionError(null);
+    setTranscriptionNotice(null);
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setTranscriptionError("Microphone recording is not supported in this browser. Try a current version of Edge or Chrome.");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      const mimeType = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/ogg;codecs=opus",
+        "audio/ogg",
+        "audio/mp4",
+      ].find((type) => MediaRecorder.isTypeSupported(type));
+      if (!mimeType) throw new Error("This browser does not provide a supported audio recording format.");
+
+      const recorder = new MediaRecorder(stream, { mimeType });
+      recorderRef.current = recorder;
+      recordingChunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) recordingChunksRef.current.push(event.data);
+      };
+      recorder.onerror = () => {
+        mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+        recorderRef.current = null;
+        setIsRecording(false);
+        setTranscriptionError("The browser could not record audio from the microphone.");
+      };
+      recorder.onstop = () => {
+        const chunks = recordingChunksRef.current;
+        recordingChunksRef.current = [];
+        const recordedMimeType = recorder.mimeType || mimeType;
+        mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+        recorderRef.current = null;
+        setIsRecording(false);
+
+        const audioBlob = new Blob(chunks, { type: recordedMimeType });
+        if (!audioBlob.size) {
+          setTranscriptionError("No audio was captured. Check your microphone and try again.");
+          return;
+        }
+        if (audioBlob.size > MAX_RECORDING_BYTES) {
+          setTranscriptionError("This recording exceeds the 25 MB upload limit. Record a shorter note and try again.");
+          return;
+        }
+
+        const extension = recordedMimeType.includes("webm")
+          ? ".webm"
+          : recordedMimeType.includes("ogg")
+            ? ".ogg"
+            : ".m4a";
+        void transcribeRecordedAudio(
+          new File([audioBlob], `voice-note-${Date.now()}${extension}`, { type: recordedMimeType }),
+        );
+      };
+      recorder.start(1000);
+      setIsRecording(true);
+    } catch (error) {
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      setTranscriptionError(
+        error instanceof Error && error.name === "NotAllowedError"
+          ? "Microphone access was denied. Allow microphone access in your browser, then try again."
+          : error instanceof Error
+            ? error.message
+            : "Could not start microphone recording.",
+      );
+    }
+  }
+
+  function stopVoiceRecording() {
+    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      recorderRef.current.stop();
+    }
+  }
+
+  useEffect(() => () => {
+    const recorder = recorderRef.current;
+    if (recorder) {
+      recorder.ondataavailable = null;
+      recorder.onstop = null;
+      if (recorder.state !== "inactive") recorder.stop();
+    }
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
 
   async function transcribeAudio() {
     if (!audioFile) return;
@@ -212,9 +329,39 @@ export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
           )}
           <section className="mb-6 rounded-xl border border-slate-200 bg-white p-5" aria-label="Analyze clinical note">
             <h2 className="mb-2 text-sm font-semibold text-slate-900">Analyze a clinical note</h2>
-            <textarea value={noteText} onChange={(e) => setNoteText(e.target.value)} rows={4} className="w-full rounded-lg border border-slate-300 p-3 text-sm" placeholder="Paste discharge note text" aria-label="Clinical note text" />
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <label htmlFor="dashboard-clinical-note" className="text-xs font-semibold text-slate-700">
+                Paste a note or record it with your microphone
+              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={transcriptionLanguage}
+                  onChange={(event) => setTranscriptionLanguage(event.target.value as "" | "ml" | "en")}
+                  className="rounded border border-slate-200 px-2 py-1.5 text-xs"
+                  aria-label="Recording language"
+                  disabled={isRecording || isTranscribing}
+                >
+                  <option value="">Detect language</option>
+                  <option value="ml">Malayalam</option>
+                  <option value="en">English</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={isRecording ? stopVoiceRecording : startVoiceRecording}
+                  disabled={isTranscribing || analyzing}
+                  aria-pressed={isRecording}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50 ${isRecording ? "bg-red-600 hover:bg-red-700" : "bg-slate-700 hover:bg-slate-800"}`}
+                >
+                  {isRecording ? "Stop recording" : isTranscribing ? "Transcribing voice…" : "🎙 Record voice"}
+                </button>
+              </div>
+            </div>
+            {isRecording && <p className="mb-2 text-xs text-red-700" role="status">Recording from your microphone. Select Stop recording when finished.</p>}
+            {transcriptionError && <p className="mb-2 text-xs text-red-700" role="alert">{transcriptionError}</p>}
+            {transcriptionNotice && <p className="mb-2 text-xs text-amber-800" role="status">{transcriptionNotice}</p>}
+            <textarea id="dashboard-clinical-note" value={noteText} onChange={(e) => setNoteText(e.target.value)} rows={4} className="w-full rounded-lg border border-slate-300 p-3 text-sm" placeholder="Paste discharge note text or record a voice note above" aria-label="Clinical note text" />
             {analysisError && <p className="mt-2 text-sm text-red-700" role="alert">{analysisError}</p>}
-            <button onClick={analyzeNote} disabled={analyzing || !noteText.trim()} className="mt-3 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+            <button onClick={analyzeNote} disabled={analyzing || isRecording || isTranscribing || !noteText.trim()} className="mt-3 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
               {analyzing ? "Analyzing…" : "Analyze note"}
             </button>
           </section>
