@@ -207,7 +207,7 @@ def test_audio_transcription_returns_a_reviewable_draft_and_removes_temp_file(mo
         response = client.post(
             "/api/transcribe?language=ml",
             content=b"test audio bytes",
-            headers={"X-Audio-Filename": "sample.m4a", "Content-Type": "audio/mp4"},
+            headers={"X-Audio-Filename": "sample.webm", "Content-Type": "audio/webm"},
         )
 
     assert response.status_code == 200

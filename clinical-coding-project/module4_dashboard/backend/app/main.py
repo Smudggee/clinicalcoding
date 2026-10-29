@@ -278,7 +278,7 @@ def analyze_note(req: AnalyzeRequest):
 
 
 MAX_AUDIO_UPLOAD_BYTES = 25 * 1024 * 1024
-ALLOWED_AUDIO_SUFFIXES = {".m4a", ".mp3", ".wav", ".flac", ".ogg", ".aac"}
+ALLOWED_AUDIO_SUFFIXES = {".m4a", ".mp3", ".wav", ".flac", ".ogg", ".aac", ".webm"}
 
 
 def _create_transcription_service():
