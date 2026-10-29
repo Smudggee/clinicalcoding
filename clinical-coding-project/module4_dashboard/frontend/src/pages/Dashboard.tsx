@@ -252,7 +252,7 @@ export default function Dashboard({ auth, onSignOut, onNavigate }: Props) {
                     onClick={() => setIsAnalyzeOpen(true)}
                     className="bg-blue-600 text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-blue-700 transition flex items-center gap-1.5 shadow-sm"
                   >
-                    <span>⚡</span> Test My Model (New Note)
+                    <span>⚡</span> New Note (Text or Audio)
                   </button>
                   <button
                     onClick={load}
