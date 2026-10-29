@@ -71,6 +71,13 @@ class PredictedCode(BaseModel):
     overrideReason: Optional[str] = None
 
 
+class SubmittedCode(BaseModel):
+    code: str
+    action: str  # "confirmed" | "overridden"
+    replacesCode: Optional[str] = None
+    reason: Optional[str] = None
+
+
 class CaseItem(BaseModel):
     id: str
     patientId: str
@@ -81,6 +88,7 @@ class CaseItem(BaseModel):
     words: List[str]
     predictedCodes: List[PredictedCode]
     submittedToBilling: Optional[bool] = False
+    submittedCodes: Optional[List[SubmittedCode]] = None
     analysisSource: Optional[str] = None
     analysisSourceLabel: Optional[str] = None
 

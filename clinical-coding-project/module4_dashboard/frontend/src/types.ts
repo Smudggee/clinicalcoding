@@ -48,6 +48,12 @@ export interface CaseItem {
   words: string[];
   predictedCodes: PredictedCode[];
   submittedToBilling?: boolean;
+  submittedCodes?: Array<{
+    code: string;
+    action: "confirmed" | "overridden";
+    replacesCode?: string | null;
+    reason?: string | null;
+  }>;
   analysisSource?: "rule_based_demo" | "mock_demo" | string;
   analysisSourceLabel?: string;
   dataSource?: "backend" | "mock";

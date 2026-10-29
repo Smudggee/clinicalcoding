@@ -442,6 +442,28 @@ def submit_case(case_id: str, req: SubmitRequest):
     if not any(code.get("userAction") in {"confirmed", "overridden"} for code in predicted_codes):
         raise HTTPException(status_code=409, detail="Confirm or override at least one code before submitting the case.")
 
+    submitted_codes = []
+    for code in predicted_codes:
+        action = code.get("userAction")
+        if action == "confirmed":
+            submitted_codes.append({
+                "code": code["code"],
+                "action": "confirmed",
+                "replacesCode": None,
+                "reason": None,
+            })
+        elif action == "overridden":
+            replacement_code = code.get("overrideCode")
+            if not isinstance(replacement_code, str) or not replacement_code.strip():
+                raise HTTPException(status_code=409, detail="Every override must include a replacement code before submission.")
+            submitted_codes.append({
+                "code": replacement_code.strip().upper(),
+                "action": "overridden",
+                "replacesCode": code["code"],
+                "reason": code.get("overrideReason"),
+            })
+
+    case["submittedCodes"] = submitted_codes
     case["status"] = "Completed"
     case["submittedToBilling"] = True
 
@@ -451,12 +473,16 @@ def submit_case(case_id: str, req: SubmitRequest):
         "coderName": req.coderName,
         "caseId": case_id,
         "action": "Submitted",
-        "codeAffected": "ALL",
+        "codeAffected": f"{len(submitted_codes)} codes",
         "oldValue": "—",
-        "newValue": "Submitted to billing",
+        "newValue": "Local billing submission snapshot saved; external billing integration is not configured",
     })
     _persist_state()
-    return {"status": "ok", "message": "Case submitted to billing"}
+    return {
+        "status": "ok",
+        "message": "Reviewed-code submission snapshot saved; no external billing system is connected.",
+        "submittedCodes": submitted_codes,
+    }
 
 
 # ==============================================================================
