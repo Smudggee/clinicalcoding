@@ -1,5 +1,9 @@
-
 """Malayalam speech transcription using a local faster-whisper model."""
+
+import os
+os.environ.setdefault("USE_TORCH", "0")
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_FLAX", "0")
 
 from pathlib import Path
 

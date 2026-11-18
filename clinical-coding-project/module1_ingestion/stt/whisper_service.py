@@ -6,8 +6,12 @@ import shutil
 import subprocess
 import tempfile
 
+import os
+os.environ.setdefault("USE_TORCH", "0")
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_FLAX", "0")
+
 from faster_whisper import WhisperModel
-from transformers import pipeline
 
 
 # Project root: clinical-coding-project/
@@ -64,13 +68,17 @@ class WhisperTranscriptionService:
     def load_alternative_model(self):
         """Load the alternative Malayalam model on demand."""
         if self.alternative_model is None:
-            device_id = 0 if self.device == "cuda" else -1
+            try:
+                from transformers import pipeline
+                device_id = 0 if self.device == "cuda" else -1
 
-            self.alternative_model = pipeline(
-                "automatic-speech-recognition",
-                model=self.alternative_model_name,
-                device=device_id,
-            )
+                self.alternative_model = pipeline(
+                    "automatic-speech-recognition",
+                    model=self.alternative_model_name,
+                    device=device_id,
+                )
+            except Exception:
+                return None
 
         return self.alternative_model
 
@@ -112,6 +120,9 @@ class WhisperTranscriptionService:
         # Alternative Malayalam Transformers backend.
         if self.backend == "alternative":
             alternative_model = self.load_alternative_model()
+            if alternative_model is None:
+                self.backend = "faster-whisper"
+        if self.backend == "alternative":
 
             if not Path(FFMPEG_PATH).is_file():
                 raise FileNotFoundError(

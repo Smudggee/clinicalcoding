@@ -53,7 +53,7 @@ app.add_middleware(
 )
 
 # Instantiate the live Neuro-Symbolic Pipeline
-pipeline = ClinicalCodingPipeline(review_threshold=0.50, auto_accept_threshold=0.85)
+pipeline = ClinicalCodingPipeline(review_threshold=0.20, auto_accept_threshold=0.45)
 
 # SQLite-backed state is loaded into lists to preserve the existing route logic.
 DATABASE_PATH = os.environ.get(

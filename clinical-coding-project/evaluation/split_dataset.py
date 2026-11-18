@@ -1,7 +1,26 @@
 
 """Split records by patient to prevent data leakage."""
 
-from sklearn.model_selection import GroupShuffleSplit
+import random
+
+try:
+    from sklearn.model_selection import GroupShuffleSplit
+except Exception:
+    class GroupShuffleSplit:
+        """Pure-Python fallback for GroupShuffleSplit when sklearn binary extensions are restricted."""
+        def __init__(self, n_splits=1, test_size=0.2, random_state=42):
+            self.test_size = test_size
+            self.random_state = random_state
+
+        def split(self, X, y=None, groups=None):
+            unique_groups = sorted(list(set(groups)))
+            rng = random.Random(self.random_state)
+            rng.shuffle(unique_groups)
+            n_test = max(1, int(round(len(unique_groups) * self.test_size)))
+            test_groups = set(unique_groups[:n_test])
+            train_idx = [i for i, g in enumerate(groups) if g not in test_groups]
+            test_idx = [i for i, g in enumerate(groups) if g in test_groups]
+            yield train_idx, test_idx
 
 
 def split_records(records, test_size=0.2, val_size=0.1, random_state=42):
