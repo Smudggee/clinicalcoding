@@ -130,8 +130,8 @@ class AuditEntry(BaseModel):
 
 
 class SystemSettings(BaseModel):
-    auto_accept_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
-    review_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    auto_accept_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
+    review_threshold: float = Field(default=0.20, ge=0.0, le=1.0)
     model_name: str = "emilyalsentzer/Bio_ClinicalBERT (base encoder; no task checkpoint)"
     ontology_version: str = "ICD-10-CM 2026"
     sliding_window_size: int = 512

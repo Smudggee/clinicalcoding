@@ -43,6 +43,12 @@ def parse_args():
         help="Validation set fraction (default: 0.10).",
     )
     parser.add_argument(
+        "--max_records",
+        type=int,
+        default=741,
+        help="Maximum records to extract (default: 741 for 592/74/75 split). Pass 0 for all.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -51,33 +57,14 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_raw_dataframe(input_path: str) -> pd.DataFrame:
-    """Loads dataframe from raw CSV or ZIP archive."""
-    if not os.path.exists(input_path):
-        raise FileNotFoundError(f"Input file not found at: {input_path}")
-
-    if input_path.endswith(".zip"):
-        with zipfile.ZipFile(input_path) as z:
-            csv_candidates = [f for f in z.namelist() if f.endswith(".csv")]
-            if not csv_candidates:
-                raise ValueError(f"No CSV file found inside archive: {input_path}")
-            target_csv = csv_candidates[0]
-            for c in csv_candidates:
-                if "mimic" in c.lower() or "discharge" in c.lower():
-                    target_csv = c
-                    break
-            print(f"[build_splits] Reading '{target_csv}' from zip archive...")
-            return pd.read_csv(z.open(target_csv))
-    elif input_path.endswith(".csv"):
-        print(f"[build_splits] Reading CSV from '{input_path}'...")
-        return pd.read_csv(input_path)
-    else:
-        raise ValueError(f"Unsupported file format: {input_path}. Please provide a .csv or .zip file.")
-
-
-def extract_labeled_records(df: pd.DataFrame) -> list:
+def extract_labeled_records_from_df(df: pd.DataFrame, seen_keys: set = None) -> list:
     """Extracts 14 canonical ICD-10 conditions from clinical discharge summaries."""
+    if seen_keys is None:
+        seen_keys = set()
+
     text_col = "text" if "text" in df.columns else df.columns[0]
+    has_subject = "subject_id" in df.columns
+    has_note_id = "note_id" in df.columns
 
     code_patterns = [
         ("I10", [r"\bessential hypertension\b", r"\bhypertension\b", r"\bhtn\b"]),
@@ -99,6 +86,9 @@ def extract_labeled_records(df: pd.DataFrame) -> list:
     records = []
     for idx, row in df.iterrows():
         text = str(row[text_col]).strip()
+        if not text or len(text) < 30:
+            continue
+
         detected = set()
         for code, pats in code_patterns:
             for p in pats:
@@ -118,33 +108,85 @@ def extract_labeled_records(df: pd.DataFrame) -> list:
             detected.remove("E11.9")
 
         if len(detected) > 0:
-            patient_id = f"PID_{idx:05d}"
+            patient_id = f"PID_{row['subject_id']}" if has_subject and pd.notna(row["subject_id"]) else f"PID_{idx:05d}"
+            doc_id = str(row["note_id"]) if has_note_id and pd.notna(row["note_id"]) else f"mimic_doc_{idx:04d}"
+
+            record_key = (patient_id, text, tuple(sorted(detected)))
+            if record_key in seen_keys:
+                continue
+            seen_keys.add(record_key)
+
             records.append({
                 "patient_id": patient_id,
-                "document_id": f"mimic_doc_{idx:04d}",
+                "document_id": doc_id,
                 "text": text,
                 "codes": sorted(list(detected)),
             })
     return records
 
 
+def extract_labeled_records(df: pd.DataFrame) -> list:
+    """Legacy helper for backward compatibility."""
+    return extract_labeled_records_from_df(df)
+
+
+def collect_records_from_file(input_path: str, max_records: int = 741) -> list:
+    """Streams and labels records from raw CSV, CSV.GZ, or ZIP archive."""
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"Input file not found at: {input_path}")
+
+    seen_keys = set()
+    records = []
+
+    if input_path.endswith(".zip"):
+        with zipfile.ZipFile(input_path) as z:
+            csv_candidates = [f for f in z.namelist() if f.endswith(".csv")]
+            if not csv_candidates:
+                raise ValueError(f"No CSV file found inside archive: {input_path}")
+            target_csv = csv_candidates[0]
+            for c in csv_candidates:
+                if "mimic" in c.lower() or "discharge" in c.lower():
+                    target_csv = c
+                    break
+            print(f"[build_splits] Reading '{target_csv}' from zip archive...")
+            df = pd.read_csv(z.open(target_csv))
+            return extract_labeled_records_from_df(df, seen_keys)
+
+    elif input_path.endswith(".csv.gz") or input_path.endswith(".gz") or input_path.endswith(".csv"):
+        print(f"[build_splits] Streaming records from '{input_path}'...")
+        chunk_size = 500
+        reader = pd.read_csv(input_path, chunksize=chunk_size, low_memory=False)
+        for chunk_idx, chunk in enumerate(reader):
+            extracted = extract_labeled_records_from_df(chunk, seen_keys)
+            records.extend(extracted)
+            if chunk_idx % 2 == 0 or len(records) >= (max_records or 1):
+                print(f"[build_splits] Collected {len(records)} verified records so far...")
+            if max_records and len(records) >= max_records:
+                records = records[:max_records]
+                break
+        return records
+    else:
+        raise ValueError(f"Unsupported file format: {input_path}. Please provide a .csv, .csv.gz, or .zip file.")
+
+
 def main():
     args = parse_args()
 
     if not args.input_file:
+        downloads_gz = os.path.expanduser(r"~\Downloads\discharge.csv.gz")
         default_csv = os.path.join(PROJECT_ROOT, "data", "mimic_iv_raw.csv")
         default_zip = os.path.join(PROJECT_ROOT, "data", "mimic_iv_raw.zip")
-        if os.path.exists(default_csv):
+        if os.path.exists(downloads_gz):
+            args.input_file = downloads_gz
+        elif os.path.exists(default_csv):
             args.input_file = default_csv
         elif os.path.exists(default_zip):
             args.input_file = default_zip
         else:
-            print("Notice: No --input_file passed. Running verification test on internal benchmark dataset.")
-            # If default input is not provided, script informs user how to point to raw download
+            print("Notice: No --input_file passed and discharge.csv.gz not found in Downloads.")
             return
 
-    df = load_raw_dataframe(args.input_file)
-    records = extract_labeled_records(df)
+    records = collect_records_from_file(args.input_file, max_records=args.max_records)
 
     print(f"\n[Split Pipeline] Total verified clinical records: {len(records)}")
     distinct_pts = len(set(r["patient_id"] for r in records))
@@ -181,6 +223,11 @@ def main():
     pd.DataFrame(to_csv_records(train)).to_csv(os.path.join(args.output_dir, "train.csv"), index=False)
     pd.DataFrame(to_csv_records(val)).to_csv(os.path.join(args.output_dir, "val.csv"), index=False)
     pd.DataFrame(to_csv_records(test)).to_csv(os.path.join(args.output_dir, "test.csv"), index=False)
+
+    canonical_label_map = os.path.join(PROJECT_ROOT, "data", "label_map.json")
+    if os.path.exists(canonical_label_map):
+        import shutil
+        shutil.copyfile(canonical_label_map, os.path.join(args.output_dir, "label_map.json"))
 
     print("\n=======================================================")
     print("           PATIENT-LEVEL SPLIT VALIDATION REPORT       ")
